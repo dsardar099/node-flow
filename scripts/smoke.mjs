@@ -57,7 +57,7 @@ async function call(method, path, { body, key = KEY, headers = {} } = {}) {
   } catch {
     json = text;
   }
-  return { status: response.status, body: json };
+  return { status: response.status, body: json, headers: response.headers };
 }
 
 async function until(predicate, timeoutMs = 30_000, label = 'condition') {
@@ -80,6 +80,27 @@ console.log('\n[health]');
     'schema reported up to date',
     body.checks?.find((c) => c.name === 'migrations')?.detail === 'schema up to date'
   );
+
+  /**
+   * Fastify is still the adapter, asserted at the wire.
+   *
+   * The swap from Express is invisible to every controller by design — that is
+   * the property `configure-app.ts` exists to preserve — so nothing in the
+   * application can tell you it happened. Fastify advertises a keep-alive
+   * timeout on every response and Express does not, which makes this the one
+   * place the difference is observable.
+   *
+   * It matters because worker polling is the highest-volume endpoint here and
+   * adapter throughput sets how many workers one server holds. Something
+   * quietly putting Express back in the request path would not fail a single
+   * test otherwise.
+   *
+   * This lived in `server-e2e`, a package of Nx scaffold that could never pass:
+   * its sibling test asserted a `GET /v1` hello-world route that has not
+   * existed for a long time, and its setup waited for a server nothing started.
+   */
+  const { headers } = await call('GET', '/v1/health', { key: null });
+  check('served by the Fastify adapter', /timeout=\d+/.test(headers.get('keep-alive') ?? ''), headers.get('keep-alive') ?? 'no keep-alive header');
 }
 
 // ---------------------------------------------------------------- auth

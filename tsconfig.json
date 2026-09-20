@@ -22,9 +22,6 @@
       "path": "./packages/testkit"
     },
     {
-      "path": "./packages/server-e2e"
-    },
-    {
       "path": "./packages/server"
     },
     {
