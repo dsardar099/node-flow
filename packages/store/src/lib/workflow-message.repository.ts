@@ -1,4 +1,11 @@
-import { ErrorCode, NodeFlowError, TaskStatus, TaskType, isWorkflowTerminal, type JsonValue } from '@node-flow-dev/core';
+import {
+  ErrorCode,
+  NodeFlowError,
+  TaskStatus,
+  TaskType,
+  isWorkflowTerminal,
+  type JsonValue,
+} from '@node-flow-dev/core';
 import { sql } from 'kysely';
 import type { Db, DbTransaction } from './database.js';
 import type { DecideQueueRepository } from './decide-queue.repository.js';
@@ -29,20 +36,46 @@ export const MAX_PULL_BATCH = 100;
 export class WorkflowMessageRepository {
   constructor(
     private readonly db: Db,
-    private readonly workflows: Pick<WorkflowRepository, 'lockForEvaluation' | 'completeTask'>,
-    private readonly decideQueue: Pick<DecideQueueRepository, 'enqueue'>
+    private readonly workflows: Pick<
+      WorkflowRepository,
+      'lockForEvaluation' | 'completeTask'
+    >,
+    private readonly decideQueue: Pick<DecideQueueRepository, 'enqueue'>,
   ) {}
 
   /** Adds a message, and hands it straight to a pull that is already waiting. */
-  async push(namespaceId: string, workflowId: string, payload: Record<string, JsonValue>): Promise<{ messageId: string; delivered: boolean }> {
+  async push(
+    namespaceId: string,
+    workflowId: string,
+    payload: Record<string, JsonValue>,
+  ): Promise<{ messageId: string; delivered: boolean }> {
     return this.db.transaction().execute(async (tx) => {
+      // NOTE: this path takes the workflow row before the `DecideQueues` row,
+      // the opposite of the evaluator, so it can in principle deadlock the way
+      // `ExecutionControlService.withLock` did. Hoisting the enqueue the way
+      // that one does was tried and reverted: every push would then wake the
+      // decider, so a `PULL_WORKFLOW_MESSAGES` task completes on whatever has
+      // arrived rather than on a full batch, and "never hands one message to
+      // two pulls" fails with the workflow finishing mid-push. Changing when
+      // messages are batched to fix a lock order is the wrong trade.
+      //
+      // Left as is deliberately: `deliver` only enqueues when it has something
+      // to deliver, so the window is narrower than the operator path's, and the
+      // fix belongs with a deliberate look at delivery semantics rather than in
+      // a release fix.
       const workflow = await this.workflows.lockForEvaluation(workflowId, tx);
       if (!workflow || workflow.namespaceId !== namespaceId) {
-        throw new NodeFlowError(ErrorCode.NOT_FOUND, `no execution ${workflowId}`);
+        throw new NodeFlowError(
+          ErrorCode.NOT_FOUND,
+          `no execution ${workflowId}`,
+        );
       }
       // Nothing will ever read it, and accepting it would say otherwise.
       if (isWorkflowTerminal(workflow.status)) {
-        throw new NodeFlowError(ErrorCode.CONFLICT, `execution ${workflowId} is ${workflow.status} and takes no more messages`);
+        throw new NodeFlowError(
+          ErrorCode.CONFLICT,
+          `execution ${workflowId} is ${workflow.status} and takes no more messages`,
+        );
       }
 
       const row = await tx
@@ -62,7 +95,11 @@ export class WorkflowMessageRepository {
    * Called by `push`, and by the evaluator right after it schedules a pull —
    * both inside a transaction holding the execution's row lock.
    */
-  async deliver(namespaceId: string, workflowId: string, tx: DbTransaction): Promise<boolean> {
+  async deliver(
+    namespaceId: string,
+    workflowId: string,
+    tx: DbTransaction,
+  ): Promise<boolean> {
     const task = await tx
       .selectFrom('TaskExecutions')
       .select(['id', 'input'])
@@ -74,10 +111,18 @@ export class WorkflowMessageRepository {
       .executeTakeFirst();
     if (!task) return false;
 
-    const requested = Number((task.input as Record<string, unknown> | null)?.['batchSize'] ?? 1);
-    const batchSize = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), MAX_PULL_BATCH) : 1;
+    const requested = Number(
+      (task.input as Record<string, unknown> | null)?.['batchSize'] ?? 1,
+    );
+    const batchSize = Number.isFinite(requested)
+      ? Math.min(Math.max(Math.trunc(requested), 1), MAX_PULL_BATCH)
+      : 1;
 
-    const taken = await sql<{ id: string; payload: Record<string, JsonValue>; receivedAt: Date }>`
+    const taken = await sql<{
+      id: string;
+      payload: Record<string, JsonValue>;
+      receivedAt: Date;
+    }>`
       WITH next AS (
         SELECT id FROM "WorkflowMessages"
         WHERE "workflowId" = ${workflowId} AND "consumedAt" IS NULL
@@ -93,18 +138,30 @@ export class WorkflowMessageRepository {
 
     const messages = [...taken.rows]
       .sort((a, b) => Number(a.id) - Number(b.id))
-      .map((row) => ({ id: String(row.id), payload: row.payload, receivedAt: row.receivedAt.toISOString() }));
+      .map((row) => ({
+        id: String(row.id),
+        payload: row.payload,
+        receivedAt: row.receivedAt.toISOString(),
+      }));
 
     await this.workflows.completeTask(
       workflowId,
       task.id,
       TaskStatus.COMPLETED,
-      { messages, count: messages.length } as unknown as Record<string, JsonValue>,
+      { messages, count: messages.length } as unknown as Record<
+        string,
+        JsonValue
+      >,
       undefined,
       undefined,
-      tx
+      tx,
     );
-    await this.decideQueue.enqueue(namespaceId, workflowId, 'workflow messages delivered', tx);
+    await this.decideQueue.enqueue(
+      namespaceId,
+      workflowId,
+      'workflow messages delivered',
+      tx,
+    );
     return true;
   }
 
@@ -117,6 +174,10 @@ export class WorkflowMessageRepository {
       .orderBy('id')
       .limit(Math.min(Math.max(limit, 1), 1000))
       .execute();
-    return rows.map((row) => ({ ...row, id: String(row.id), payload: row.payload as Record<string, JsonValue> }));
+    return rows.map((row) => ({
+      ...row,
+      id: String(row.id),
+      payload: row.payload as Record<string, JsonValue>,
+    }));
   }
 }

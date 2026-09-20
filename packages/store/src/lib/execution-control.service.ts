@@ -49,7 +49,11 @@ import { WorkflowRepository } from './workflow.repository.js';
  * the per-version cache that makes the lookup free.
  */
 export interface BlueprintSource {
-  load(namespaceId: string, defName: string, defVersion: number): Promise<Blueprint>;
+  load(
+    namespaceId: string,
+    defName: string,
+    defVersion: number,
+  ): Promise<Blueprint>;
 }
 
 export class ExecutionControlService {
@@ -62,7 +66,7 @@ export class ExecutionControlService {
     private readonly concurrency: ConcurrencyRepository,
     private readonly events?: WorkflowEventsRepository,
     private readonly webhooks?: WebhookRepository,
-    private readonly humanTasks?: HumanTaskRepository
+    private readonly humanTasks?: HumanTaskRepository,
   ) {}
 
   /**
@@ -77,7 +81,13 @@ export class ExecutionControlService {
       if (status === WorkflowStatus.PAUSED) return; // Idempotent.
       this.assertNotTerminal(workflowId, status, 'pause');
 
-      await this.workflows.setStatus(workflowId, WorkflowStatus.PAUSED, undefined, undefined, tx);
+      await this.workflows.setStatus(
+        workflowId,
+        WorkflowStatus.PAUSED,
+        undefined,
+        undefined,
+        tx,
+      );
       await this.record(workflowId, tx, {
         type: WorkflowEventType.WORKFLOW_PAUSED,
         payload: { by },
@@ -101,7 +111,13 @@ export class ExecutionControlService {
       if (status === WorkflowStatus.RUNNING) return; // Idempotent.
       this.assertNotTerminal(workflowId, status, 'resume');
 
-      await this.workflows.setStatus(workflowId, WorkflowStatus.RUNNING, undefined, undefined, tx);
+      await this.workflows.setStatus(
+        workflowId,
+        WorkflowStatus.RUNNING,
+        undefined,
+        undefined,
+        tx,
+      );
       await this.decideQueue.enqueue(namespaceId, workflowId, 'resumed', tx);
       await this.record(workflowId, tx, {
         type: WorkflowEventType.WORKFLOW_RESUMED,
@@ -119,7 +135,11 @@ export class ExecutionControlService {
    * wants, and an unreleased semaphore permit throttles unrelated workflows
    * until its lease expires.
    */
-  async terminate(workflowId: string, reason: string, by: string): Promise<void> {
+  async terminate(
+    workflowId: string,
+    reason: string,
+    by: string,
+  ): Promise<void> {
     await this.withLock(workflowId, async (tx, status) => {
       this.assertNotTerminal(workflowId, status, 'terminate');
 
@@ -133,7 +153,7 @@ export class ExecutionControlService {
           undefined,
           `workflow terminated: ${reason}`,
           undefined,
-          tx
+          tx,
         );
         await this.concurrency.releaseAll(task.id, tx);
       }
@@ -149,14 +169,17 @@ export class ExecutionControlService {
       await this.humanTasks?.closeForWorkflow(workflowId, tx);
       // Drop any pending wakeup too, or a decider will pick up a workflow that
       // is already finished and do a pointless pass.
-      await tx.deleteFrom('DecideQueues').where('workflowId', '=', workflowId).execute();
+      await tx
+        .deleteFrom('DecideQueues')
+        .where('workflowId', '=', workflowId)
+        .execute();
 
       await this.workflows.setStatus(
         workflowId,
         WorkflowStatus.TERMINATED,
         undefined,
         reason,
-        tx
+        tx,
       );
       await this.record(workflowId, tx, {
         type: WorkflowEventType.WORKFLOW_TERMINATED,
@@ -178,7 +201,7 @@ export class ExecutionControlService {
       if (!isWorkflowTerminal(status)) {
         throw new NodeFlowError(
           ErrorCode.CONFLICT,
-          `workflow ${workflowId} is ${status}; only a terminal workflow can be retried`
+          `workflow ${workflowId} is ${status}; only a terminal workflow can be retried`,
         );
       }
 
@@ -218,9 +241,9 @@ export class ExecutionControlService {
                 .whereRef('later.workflowId', '=', 't.workflowId')
                 .whereRef('later.refName', '=', 't.refName')
                 .whereRef('later.iteration', '=', 't.iteration')
-                .whereRef('later.attempt', '>', 't.attempt')
-            )
-          )
+                .whereRef('later.attempt', '>', 't.attempt'),
+            ),
+          ),
         )
         .returning(['t.id', 't.taskDefName', 't.domain'])
         .execute();
@@ -231,7 +254,7 @@ export class ExecutionControlService {
       if (reopened.length === 0) {
         throw new NodeFlowError(
           ErrorCode.CONFLICT,
-          `workflow ${workflowId} has no failed or cancelled task to retry; start it again instead`
+          `workflow ${workflowId} has no failed or cancelled task to retry; start it again instead`,
         );
       }
 
@@ -252,7 +275,7 @@ export class ExecutionControlService {
             taskId: task.id,
             workflowId,
           },
-          tx
+          tx,
         );
       }
 
@@ -272,7 +295,11 @@ export class ExecutionControlService {
    * Used when a task succeeded but produced the wrong answer — a retry would
    * not touch it, because nothing failed.
    */
-  async rerunFromTask(workflowId: string, refName: string, by: string): Promise<number> {
+  async rerunFromTask(
+    workflowId: string,
+    refName: string,
+    by: string,
+  ): Promise<number> {
     return this.withLock(workflowId, async (tx, status, namespaceId) => {
       const target = await tx
         .selectFrom('TaskExecutions')
@@ -285,7 +312,7 @@ export class ExecutionControlService {
       if (!target) {
         throw new NodeFlowError(
           ErrorCode.NOT_FOUND,
-          `no task "${refName}" in workflow ${workflowId}`
+          `no task "${refName}" in workflow ${workflowId}`,
         );
       }
 
@@ -300,7 +327,8 @@ export class ExecutionControlService {
         .returning('id')
         .execute();
 
-      for (const task of removed) await this.concurrency.releaseAll(task.id, tx);
+      for (const task of removed)
+        await this.concurrency.releaseAll(task.id, tx);
       await this.purgeQueueEntries(workflowId, tx);
       await this.timers.cancelForWorkflow(workflowId, tx);
 
@@ -344,7 +372,7 @@ export class ExecutionControlService {
   async cancelTask(
     workflowId: string,
     refName: string,
-    by: string
+    by: string,
   ): Promise<{ taskId: string; status: WorkflowStatus }> {
     return this.withLock(workflowId, async (tx, status) => {
       this.assertNotTerminal(workflowId, status, 'cancel a task in');
@@ -354,14 +382,18 @@ export class ExecutionControlService {
         .select(['id', 'status'])
         .where('workflowId', '=', workflowId)
         .where('refName', '=', refName)
-        .where('status', 'in', [TaskStatus.SCHEDULED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING])
+        .where('status', 'in', [
+          TaskStatus.SCHEDULED,
+          TaskStatus.IN_PROGRESS,
+          TaskStatus.WAITING,
+        ])
         .orderBy('scheduledAt', 'desc')
         .executeTakeFirst();
 
       if (!task) {
         throw new NodeFlowError(
           ErrorCode.NOT_FOUND,
-          `no running task "${refName}" in workflow ${workflowId}`
+          `no running task "${refName}" in workflow ${workflowId}`,
         );
       }
 
@@ -372,7 +404,7 @@ export class ExecutionControlService {
         undefined,
         `cancelled by ${by}`,
         undefined,
-        tx
+        tx,
       );
       await this.concurrency.releaseAll(task.id, tx);
       await tx.deleteFrom('TaskQueues').where('taskId', '=', task.id).execute();
@@ -381,7 +413,13 @@ export class ExecutionControlService {
       // Paused rather than left running — see above. Idempotent if the operator
       // paused first, which is the careful order and should not be punished.
       if (status !== WorkflowStatus.PAUSED) {
-        await this.workflows.setStatus(workflowId, WorkflowStatus.PAUSED, undefined, undefined, tx);
+        await this.workflows.setStatus(
+          workflowId,
+          WorkflowStatus.PAUSED,
+          undefined,
+          undefined,
+          tx,
+        );
       }
 
       await this.record(workflowId, tx, {
@@ -421,17 +459,20 @@ export class ExecutionControlService {
   async rerunTasks(
     workflowId: string,
     refNames: readonly string[],
-    options: { cascade?: boolean; by: string; blueprints: BlueprintSource }
+    options: { cascade?: boolean; by: string; blueprints: BlueprintSource },
   ): Promise<{ rerun: string[]; staleDownstream: string[] }> {
     if (refNames.length === 0) {
-      throw new NodeFlowError(ErrorCode.INVALID_ARGUMENT, 'name at least one task to re-run');
+      throw new NodeFlowError(
+        ErrorCode.INVALID_ARGUMENT,
+        'name at least one task to re-run',
+      );
     }
 
     return this.withLock(workflowId, async (tx, status, namespaceId) => {
       if (status === WorkflowStatus.RUNNING) {
         throw new NodeFlowError(
           ErrorCode.CONFLICT,
-          `workflow ${workflowId} is running; pause it before re-running tasks`
+          `workflow ${workflowId} is running; pause it before re-running tasks`,
         );
       }
 
@@ -444,14 +485,14 @@ export class ExecutionControlService {
       const blueprint = await options.blueprints.load(
         namespaceId,
         execution.defName,
-        execution.defVersion
+        execution.defVersion,
       );
 
       const unknown = refNames.filter((ref) => !blueprint.nodes.has(ref));
       if (unknown.length > 0) {
         throw new NodeFlowError(
           ErrorCode.NOT_FOUND,
-          `no task ${unknown.map((ref) => `"${ref}"`).join(', ')} in ${execution.defName} v${execution.defVersion}`
+          `no task ${unknown.map((ref) => `"${ref}"`).join(', ')} in ${execution.defName} v${execution.defVersion}`,
         );
       }
 
@@ -485,7 +526,10 @@ export class ExecutionControlService {
 
       for (const task of removed) {
         await this.concurrency.releaseAll(task.id, tx);
-        await tx.deleteFrom('TaskQueues').where('taskId', '=', task.id).execute();
+        await tx
+          .deleteFrom('TaskQueues')
+          .where('taskId', '=', task.id)
+          .execute();
         await this.timers.cancelForTask(workflowId, task.id, tx);
       }
 
@@ -518,9 +562,9 @@ export class ExecutionControlService {
                     .whereRef('later.workflowId', '=', 't.workflowId')
                     .whereRef('later.refName', '=', 't.refName')
                     .whereRef('later.iteration', '=', 't.iteration')
-                    .whereRef('later.attempt', '>', 't.attempt')
-                )
-              )
+                    .whereRef('later.attempt', '>', 't.attempt'),
+                ),
+              ),
             )
             .returning(['t.id', 't.refName', 't.taskDefName', 't.domain'])
             .execute();
@@ -528,7 +572,7 @@ export class ExecutionControlService {
       if (removed.length === 0 && rearmed.length === 0) {
         throw new NodeFlowError(
           ErrorCode.NOT_FOUND,
-          `workflow ${workflowId} has run none of ${refNames.map((ref) => `"${ref}"`).join(', ')}`
+          `workflow ${workflowId} has run none of ${refNames.map((ref) => `"${ref}"`).join(', ')}`,
         );
       }
 
@@ -539,7 +583,10 @@ export class ExecutionControlService {
       // looking.
       for (const task of rearmed) {
         await this.concurrency.releaseAll(task.id, tx);
-        await tx.deleteFrom('TaskQueues').where('taskId', '=', task.id).execute();
+        await tx
+          .deleteFrom('TaskQueues')
+          .where('taskId', '=', task.id)
+          .execute();
         await this.taskQueue.enqueue(
           {
             namespaceId,
@@ -547,7 +594,7 @@ export class ExecutionControlService {
             taskId: task.id,
             workflowId,
           },
-          tx
+          tx,
         );
       }
 
@@ -569,7 +616,9 @@ export class ExecutionControlService {
         },
       });
 
-      const rerun = [...new Set([...removed, ...rearmed].map((task) => task.refName))].sort();
+      const rerun = [
+        ...new Set([...removed, ...rearmed].map((task) => task.refName)),
+      ].sort();
       return { rerun, staleDownstream: stale };
     });
   }
@@ -580,7 +629,11 @@ export class ExecutionControlService {
    * `SKIPPED` counts as successful, so a downstream JOIN still fires — skipping
    * a branch must not deadlock the fork that is waiting on it.
    */
-  async skipTask(workflowId: string, refName: string, by: string): Promise<void> {
+  async skipTask(
+    workflowId: string,
+    refName: string,
+    by: string,
+  ): Promise<void> {
     await this.withLock(workflowId, async (tx, status, namespaceId) => {
       this.assertNotTerminal(workflowId, status, 'skip a task in');
 
@@ -596,7 +649,7 @@ export class ExecutionControlService {
       if (!task) {
         throw new NodeFlowError(
           ErrorCode.NOT_FOUND,
-          `no runnable task "${refName}" in workflow ${workflowId}`
+          `no runnable task "${refName}" in workflow ${workflowId}`,
         );
       }
 
@@ -607,17 +660,19 @@ export class ExecutionControlService {
         { skipped: true as JsonValue },
         `skipped by ${by}`,
         undefined,
-        tx
+        tx,
       );
 
       await this.concurrency.releaseAll(task.id, tx);
-      await tx
-        .deleteFrom('TaskQueues')
-        .where('taskId', '=', task.id)
-        .execute();
+      await tx.deleteFrom('TaskQueues').where('taskId', '=', task.id).execute();
       await this.timers.cancelForTask(workflowId, task.id, tx);
 
-      await this.decideQueue.enqueue(namespaceId, workflowId, 'task skipped', tx);
+      await this.decideQueue.enqueue(
+        namespaceId,
+        workflowId,
+        'task skipped',
+        tx,
+      );
       await this.record(workflowId, tx, {
         type: WorkflowEventType.TASK_SKIPPED,
         payload: { refName, by, reason: 'operator skip' },
@@ -632,25 +687,61 @@ export class ExecutionControlService {
    *
    * The same lock the decider takes, so an operator action and an evaluation
    * are strictly ordered rather than interleaved.
+   *
+   * **Both locks, in the evaluator's order.** Every action here ends by
+   * enqueueing an evaluation, so the transaction always wants the
+   * `DecideQueues` row as well as the workflow row. The evaluator takes the
+   * claim first and the workflow second, and it cannot be changed — that order
+   * *is* the lost-wakeup rule. Taking them the other way round here deadlocked
+   * against a concurrent evaluation and answered 500; see
+   * `DecideQueueRepository.enqueueForWorkflow`. So the claim row is taken
+   * first, before the `FOR UPDATE`, and the two paths now agree.
+   *
+   * The pre-enqueue is not conditional on the action succeeding, and does not
+   * need to be. If `body` throws, the whole transaction rolls back and the row
+   * goes with it. If it succeeds, the action's own `enqueue` overwrites the
+   * reason on a row this transaction already holds — no second lock, nothing to
+   * wait for. And an evaluation this did not strictly need is the cheap
+   * direction of the engine's central asymmetry: a redundant pass costs one
+   * claim-and-discard, a lost one hangs the workflow forever. A pause or a
+   * terminate that wakes the decider once for nothing is handled explicitly at
+   * the top of `evaluateInTransaction`.
    */
   private async withLock<T>(
     workflowId: string,
-    body: (tx: DbTransaction, status: WorkflowStatus, namespaceId: string) => Promise<T>
+    body: (
+      tx: DbTransaction,
+      status: WorkflowStatus,
+      namespaceId: string,
+    ) => Promise<T>,
   ): Promise<T> {
     return this.db.transaction().execute(async (tx) => {
+      await this.decideQueue.enqueueForWorkflow(
+        workflowId,
+        'operator action',
+        tx,
+      );
+
       const workflow = await this.workflows.lockForEvaluation(workflowId, tx);
       if (!workflow) {
-        throw new NodeFlowError(ErrorCode.NOT_FOUND, `no workflow ${workflowId}`);
+        throw new NodeFlowError(
+          ErrorCode.NOT_FOUND,
+          `no workflow ${workflowId}`,
+        );
       }
       return body(tx, workflow.status, workflow.namespaceId);
     });
   }
 
-  private assertNotTerminal(workflowId: string, status: WorkflowStatus, action: string): void {
+  private assertNotTerminal(
+    workflowId: string,
+    status: WorkflowStatus,
+    action: string,
+  ): void {
     if (isWorkflowTerminal(status)) {
       throw new NodeFlowError(
         ErrorCode.TERMINAL_STATE,
-        `cannot ${action} workflow ${workflowId}: it is already ${status}`
+        `cannot ${action} workflow ${workflowId}: it is already ${status}`,
       );
     }
   }
@@ -674,15 +765,21 @@ export class ExecutionControlService {
    * names through every call, would complicate the common case to optimise the
    * uncommon one.
    */
-  private async purgeQueueEntries(workflowId: string, tx: DbTransaction): Promise<void> {
-    await tx.deleteFrom('TaskQueues').where('workflowId', '=', workflowId).execute();
+  private async purgeQueueEntries(
+    workflowId: string,
+    tx: DbTransaction,
+  ): Promise<void> {
+    await tx
+      .deleteFrom('TaskQueues')
+      .where('workflowId', '=', workflowId)
+      .execute();
   }
 
   /** Puts a finished workflow back into RUNNING and schedules an evaluation. */
   private async reopenWorkflow(
     workflowId: string,
     namespaceId: string,
-    tx: DbTransaction
+    tx: DbTransaction,
   ): Promise<void> {
     await tx
       .updateTable('WorkflowExecutions')
@@ -696,14 +793,22 @@ export class ExecutionControlService {
       .where('id', '=', workflowId)
       .execute();
 
-    await this.workflows.recordStatusChange({ workflowId, event: 'RESTARTED' }, tx);
-    await this.decideQueue.enqueue(namespaceId, workflowId, 'reopened by operator', tx);
+    await this.workflows.recordStatusChange(
+      { workflowId, event: 'RESTARTED' },
+      tx,
+    );
+    await this.decideQueue.enqueue(
+      namespaceId,
+      workflowId,
+      'reopened by operator',
+      tx,
+    );
   }
 
   private async record(
     workflowId: string,
     tx: DbTransaction,
-    event: NewWorkflowEvent
+    event: NewWorkflowEvent,
   ): Promise<void> {
     if (this.events) await this.events.append(workflowId, [event], tx);
   }

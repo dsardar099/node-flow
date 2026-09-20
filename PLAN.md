@@ -2741,6 +2741,49 @@ only executes on the real release cannot be covered by the rehearsal of it.**
 | Running the image | The docs answered the same question two incompatible ways, and **both were wrong**. Two pages said "`nf` is not on npm — it ships inside the server image" and gave a `docker run … server:1.0.0 nf migrate`; three others already used `npx @node-flow-dev/cli@1.0.0`. The image carries only the bundled server, so `nf` resolves against `CMD ["node", …]` and dies with `Cannot find module '/app/nf'` — while the npx form 404'd because the package was private. A contradiction that visible survived because nobody had run either | Publishing the CLI settles it toward npm: all five recipes now use `npx`, and the callout says plainly that the image carries the server and nothing else. The image is unchanged — a production artefact is not a toolbox |
 | Reading the workflow | `pnpm -r publish --provenance` would have failed on every package: provenance refuses to sign a package with no `repository` field, and not one of them had it. The dry run cannot catch this, because `dry_run` swaps the publish for `npm pack` | Added `repository`, `homepage` and `bugs` to all seven, and a check that every published package carries `repository.url` and the right `repository.directory` |
 
+### The one the pipeline found that the suite could not
+
+The fifth defect was not a pipeline defect at all. `pnpm smoke` failed one check
+against the image — `resume accepted — got 500` — and the container logs named
+the cause exactly:
+
+```
+Process 142 waits for ShareLock on transaction 901; blocked by process 90.
+  insert into "DecideQueues" ... on conflict do update
+Process 90 waits for ShareLock on transaction 900; blocked by process 142.
+  select * from "WorkflowExecutions" where "id" = $1 for update
+```
+
+An **ABBA lock-order inversion** between an operator action and the decider.
+The evaluator takes the claim row first and the workflow row second, and that
+order *is* the lost-wakeup rule — it cannot move. `ExecutionControlService`
+took the same two rows in the opposite order, so any operator action racing an
+evaluation of the same workflow could deadlock, and Postgres would shoot one of
+them. The operator lost, `resume` answered 500, and the run stayed paused.
+
+Three things about it are worth keeping:
+
+- **The unit test for the same operation could not see it.** `pauses and
+  resumes` in `api.spec.ts` discards the resume response and polls for the
+  status, so a 500 became "condition never became true" fifteen seconds later —
+  indistinguishable from slowness, and duly dismissed as flake on a loaded
+  runner. An assertion that was never written cost more than the bug.
+- **It needed two processes and a real database.** Nothing in the engine's own
+  suite can produce it, because the deadlock is a property of two transactions
+  holding two rows, not of the decider's logic. The regression test therefore
+  parks a transaction between the evaluator's two locks and polls
+  `pg_stat_activity` until a backend is genuinely blocked — it throws rather
+  than passing vacuously if the race never sets up.
+- **The same inversion existed in two other places**, found by looking rather
+  than by failing: `timeout-sweeper.fire` (fixed the same way — the sweeper and
+  the evaluator race more than anything else, since both are driven by the same
+  workflows finishing) and `WorkflowMessageRepository.push`. The fix was
+  *reverted* for `push`: hoisting the enqueue wakes the decider on every push,
+  so a `PULL_WORKFLOW_MESSAGES` task completes on whatever has arrived instead
+  of on a full batch, and an invariant test caught it. Changing when messages
+  are batched to fix a lock order is the wrong trade, and the narrower window
+  is recorded in the code instead.
+
 The dry run is worth keeping despite the last two: it caught nothing here, but
 it is the only thing that proves the image build, the smoke gate and the pack
 step work before a tag makes them irreversible. What it cannot do is exercise

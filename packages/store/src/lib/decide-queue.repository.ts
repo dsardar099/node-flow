@@ -28,7 +28,7 @@ export class DecideQueueRepository {
     namespaceId: string,
     workflowId: string,
     reason: string,
-    tx?: Queryable
+    tx?: Queryable,
   ): Promise<void> {
     await (tx ?? this.db)
       .insertInto('DecideQueues')
@@ -62,7 +62,61 @@ export class DecideQueueRepository {
     // Like the task-queue notification, this is an **optimisation and never a
     // guarantee** — a replica mid-reconnect misses it, and the decider's own
     // interval is what makes the system correct without it.
-    await sql`SELECT pg_notify(${DECIDE_CHANNEL}, ${workflowId})`.execute(tx ?? this.db);
+    await sql`SELECT pg_notify(${DECIDE_CHANNEL}, ${workflowId})`.execute(
+      tx ?? this.db,
+    );
+  }
+
+  /**
+   * Enqueues without already knowing the namespace, resolving it from the
+   * workflow row in the same statement.
+   *
+   * This exists for **lock ordering**, not convenience. `enqueue` needs a
+   * `namespaceId` the caller can only get by reading the workflow, and an
+   * operator action reads it under `FOR UPDATE` — so it holds the workflow row
+   * and then reaches for the `DecideQueues` row. The evaluator takes the two in
+   * the opposite order, claim first and workflow second, because the
+   * lost-wakeup rule requires it. Two transactions taking the same pair of
+   * locks in opposite orders is a deadlock, and Postgres duly detected one:
+   *
+   *     Process 142 waits for ShareLock on transaction 901; blocked by 90.
+   *       insert into "DecideQueues" ... on conflict do update
+   *     Process 90 waits for ShareLock on transaction 900; blocked by 142.
+   *       select * from "WorkflowExecutions" where "id" = $1 for update
+   *
+   * The operator lost, `resume` answered 500, and the run stayed paused. It is
+   * rare — it needs an evaluation in flight for the same workflow at the moment
+   * of the action — which is exactly why it reached a release candidate.
+   *
+   * Resolving the namespace by sub-select means the caller can take this row
+   * **first**, matching the evaluator, so neither side ever holds one lock
+   * while waiting for the other. A workflow that does not exist selects no
+   * rows and inserts nothing; the caller's own lookup reports that.
+   */
+  async enqueueForWorkflow(
+    workflowId: string,
+    reason: string,
+    tx: DbTransaction,
+  ): Promise<void> {
+    await tx
+      .insertInto('DecideQueues')
+      .columns(['workflowId', 'namespaceId', 'reason'])
+      .expression((eb) =>
+        eb
+          .selectFrom('WorkflowExecutions')
+          .select([
+            'id as workflowId',
+            'namespaceId',
+            eb.val(reason).as('reason'),
+          ])
+          .where('id', '=', workflowId),
+      )
+      // Same reasoning as `enqueue`: `DO UPDATE` so an existing row is locked
+      // rather than silently skipped.
+      .onConflict((oc) => oc.column('workflowId').doUpdateSet({ reason }))
+      .execute();
+
+    await sql`SELECT pg_notify(${DECIDE_CHANNEL}, ${workflowId})`.execute(tx);
   }
 
   /**
@@ -86,7 +140,10 @@ export class DecideQueueRepository {
    *
    * @returns true if this caller owns the evaluation.
    */
-  async claimForEvaluation(workflowId: string, tx: DbTransaction): Promise<boolean> {
+  async claimForEvaluation(
+    workflowId: string,
+    tx: DbTransaction,
+  ): Promise<boolean> {
     const rows = await tx
       .deleteFrom('DecideQueues')
       .where('workflowId', '=', workflowId)
@@ -118,7 +175,7 @@ export class DecideQueueRepository {
    */
   async peekBatch(
     limit: number,
-    offset = 0
+    offset = 0,
   ): Promise<{ workflowId: string; namespaceId: string }[]> {
     return this.db
       .selectFrom('DecideQueues')

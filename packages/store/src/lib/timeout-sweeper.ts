@@ -1,4 +1,9 @@
-import { TaskStatus, WorkflowStatus, isTaskTerminal, type JsonValue } from '@node-flow-dev/core';
+import {
+  TaskStatus,
+  WorkflowStatus,
+  isTaskTerminal,
+  type JsonValue,
+} from '@node-flow-dev/core';
 import { failureWorkflowStart } from '@node-flow-dev/engine';
 import type { Db } from './database.js';
 import type { BlueprintLoader } from './evaluator.js';
@@ -31,7 +36,10 @@ export class TimeoutSweeper {
      * this a run that failed by overrunning its budget never started the
      * compensation its definition declared.
      */
-    private readonly failures?: { blueprints: BlueprintLoader; outbox: OutboxRepository }
+    private readonly failures?: {
+      blueprints: BlueprintLoader;
+      outbox: OutboxRepository;
+    },
   ) {}
 
   /** Processes one batch of due timers. Returns how many fired. */
@@ -63,20 +71,55 @@ export class TimeoutSweeper {
    * completion races with the sweeper. Checking here is what stops a completed
    * task being marked TIMED_OUT after the fact.
    */
-  private async fire(timer: DueTimer, tx: Parameters<TimerRepository['remove']>[1]): Promise<boolean> {
+  private async fire(
+    timer: DueTimer,
+    tx: Parameters<TimerRepository['remove']>[1],
+  ): Promise<boolean> {
+    // Before the row lock, so the pair is taken in the evaluator's order. Every
+    // branch below enqueues while holding the workflow row, and the opposite
+    // order deadlocks against a concurrent evaluation — see
+    // `DecideQueueRepository.enqueueForWorkflow`. The sweeper races the
+    // evaluator more than anything else does, since both are driven by the same
+    // workflows finishing.
+    //
+    // The cost of hoisting it is one redundant wakeup per due timer whose
+    // workflow is no longer RUNNING, and none at all for one whose workflow is
+    // gone — the insert selects from `WorkflowExecutions`, so it writes nothing
+    // when there is no row to read a namespace from.
+    await this.decideQueue.enqueueForWorkflow(
+      timer.workflowId,
+      `timer:${timer.kind}`,
+      tx as never,
+    );
+
     const workflow = await this.workflows.lockForEvaluation(
       timer.workflowId,
-      tx as never
+      tx as never,
     );
     if (!workflow || workflow.status !== WorkflowStatus.RUNNING) return false;
 
     if (timer.kind === 'workflowTimeout') {
       const reason = 'workflow exceeded its timeout';
-      await this.workflows.setStatus(timer.workflowId, WorkflowStatus.TIMED_OUT, undefined, reason, tx);
+      await this.workflows.setStatus(
+        timer.workflowId,
+        WorkflowStatus.TIMED_OUT,
+        undefined,
+        reason,
+        tx,
+      );
 
       if (this.failures) {
-        const blueprint = await this.failures.blueprints.load(workflow.namespaceId, workflow.defName, workflow.defVersion);
-        const start = failureWorkflowStart(blueprint, workflow, WorkflowStatus.TIMED_OUT, reason);
+        const blueprint = await this.failures.blueprints.load(
+          workflow.namespaceId,
+          workflow.defName,
+          workflow.defVersion,
+        );
+        const start = failureWorkflowStart(
+          blueprint,
+          workflow,
+          WorkflowStatus.TIMED_OUT,
+          reason,
+        );
         if (start) {
           await this.failures.outbox.publish(
             workflow.namespaceId,
@@ -88,7 +131,7 @@ export class TimeoutSweeper {
               idempotencyKey: start.idempotencyKey ?? null,
               correlationId: start.correlationId ?? null,
             },
-            tx
+            tx,
           );
         }
       }
@@ -96,7 +139,7 @@ export class TimeoutSweeper {
         timer.namespaceId,
         timer.workflowId,
         'workflow timed out',
-        tx
+        tx,
       );
       return true;
     }
@@ -118,16 +161,26 @@ export class TimeoutSweeper {
         { waited: true },
         undefined,
         undefined,
-        tx
+        tx,
       );
-      await this.decideQueue.enqueue(timer.namespaceId, timer.workflowId, 'wait elapsed', tx);
+      await this.decideQueue.enqueue(
+        timer.namespaceId,
+        timer.workflowId,
+        'wait elapsed',
+        tx,
+      );
       return true;
     }
 
     // A scheduleToStart deadline only applies while the task is still waiting;
     // once a worker has it, startToClose is the relevant budget.
-    if (timer.kind === 'scheduleToStart' && task.status !== TaskStatus.SCHEDULED) return false;
-    if (timer.kind === 'startToClose' && task.status !== TaskStatus.IN_PROGRESS) return false;
+    if (
+      timer.kind === 'scheduleToStart' &&
+      task.status !== TaskStatus.SCHEDULED
+    )
+      return false;
+    if (timer.kind === 'startToClose' && task.status !== TaskStatus.IN_PROGRESS)
+      return false;
 
     await this.workflows.completeTask(
       timer.workflowId,
@@ -136,19 +189,24 @@ export class TimeoutSweeper {
       undefined,
       reasonFor(timer.kind),
       undefined,
-      tx
+      tx,
     );
 
     // The decider decides what a timeout means — retry, or fail the workflow.
     // The sweeper only records that the deadline passed.
-    await this.decideQueue.enqueue(timer.namespaceId, timer.workflowId, `timer:${timer.kind}`, tx);
+    await this.decideQueue.enqueue(
+      timer.namespaceId,
+      timer.workflowId,
+      `timer:${timer.kind}`,
+      tx,
+    );
     return true;
   }
 
   private async findTask(
     workflowId: string,
     taskId: string,
-    tx: Parameters<TimerRepository['remove']>[1]
+    tx: Parameters<TimerRepository['remove']>[1],
   ) {
     return tx
       .selectFrom('TaskExecutions')

@@ -6,10 +6,15 @@ import {
   workflowDefinitionSchema,
 } from '@node-flow-dev/core';
 import { compileBlueprint, type Blueprint } from '@node-flow-dev/engine';
+import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ConcurrencyRepository } from './concurrency.repository.js';
 import { DecideQueueRepository } from './decide-queue.repository.js';
-import { Evaluator, type BlueprintLoader, type TaskDefLoader } from './evaluator.js';
+import {
+  Evaluator,
+  type BlueprintLoader,
+  type TaskDefLoader,
+} from './evaluator.js';
 import { ExecutionControlService } from './execution-control.service.js';
 import { OutboxRepository } from './outbox.repository.js';
 import { TaskDispatchService } from './task-dispatch.service.js';
@@ -22,7 +27,10 @@ import {
 } from './testing/postgres-harness.js';
 import { json } from './schema.js';
 import { TimerRepository } from './timer.repository.js';
-import { WorkflowEventsRepository, WorkflowEventType } from './workflow-events.repository.js';
+import {
+  WorkflowEventsRepository,
+  WorkflowEventType,
+} from './workflow-events.repository.js';
 import { WorkflowRepository } from './workflow.repository.js';
 
 /**
@@ -56,10 +64,18 @@ const simple = (ref: string) => ({
 class StubBlueprints implements BlueprintLoader {
   private readonly map = new Map<string, Blueprint>();
   register(definition: Record<string, unknown>): void {
-    const parsed = workflowDefinitionSchema.parse({ name: 'wf', version: 1, ...definition });
+    const parsed = workflowDefinitionSchema.parse({
+      name: 'wf',
+      version: 1,
+      ...definition,
+    });
     this.map.set(`${parsed.name}:${parsed.version}`, compileBlueprint(parsed));
   }
-  async load(_ns: string, defName: string, defVersion: number): Promise<Blueprint> {
+  async load(
+    _ns: string,
+    defName: string,
+    defVersion: number,
+  ): Promise<Blueprint> {
     const bp = this.map.get(`${defName}:${defVersion}`);
     if (!bp) throw new Error(`no blueprint for ${defName} v${defVersion}`);
     return bp;
@@ -71,8 +87,12 @@ const policyLoader: TaskDefLoader = {
     new Map(
       names.map((name) => [
         name,
-        taskDefinitionSchema.parse({ name, retryCount: 0, retryDelaySeconds: 0 }),
-      ])
+        taskDefinitionSchema.parse({
+          name,
+          retryCount: 0,
+          retryDelaySeconds: 0,
+        }),
+      ]),
     ),
 };
 
@@ -91,7 +111,7 @@ beforeAll(async () => {
     taskQueue,
     decideQueue,
     timers,
-    concurrency
+    concurrency,
   );
   control = new ExecutionControlService(
     harness.db,
@@ -100,7 +120,7 @@ beforeAll(async () => {
     taskQueue,
     timers,
     concurrency,
-    events
+    events,
   );
   blueprints = new StubBlueprints();
   evaluator = new Evaluator(
@@ -112,7 +132,7 @@ beforeAll(async () => {
     blueprints,
     policyLoader,
     timers,
-    events
+    events,
   );
 }, 180_000);
 
@@ -125,24 +145,35 @@ beforeEach(async () => {
   namespaceId = await seedNamespace(harness.db);
 });
 
-async function start(definition: Record<string, unknown> = { tasks: [simple('a'), simple('b')] }) {
+async function start(
+  definition: Record<string, unknown> = { tasks: [simple('a'), simple('b')] },
+) {
   blueprints.register(definition);
-  const wf = await workflows.start({ namespaceId, defName: 'wf', defVersion: 1 });
+  const wf = await workflows.start({
+    namespaceId,
+    defName: 'wf',
+    defVersion: 1,
+  });
   await decideQueue.enqueue(namespaceId, wf.id, 'start');
   await drain(wf.id);
   return wf;
 }
 
 async function drain(workflowId: string) {
-  for (let i = 0; i < 20; i++) if (!(await evaluator.evaluate(workflowId)).evaluated) break;
+  for (let i = 0; i < 20; i++)
+    if (!(await evaluator.evaluate(workflowId)).evaluated) break;
 }
 
 async function complete(
   workflowId: string,
   queueName: string,
-  status: TaskStatus = TaskStatus.COMPLETED
+  status: TaskStatus = TaskStatus.COMPLETED,
 ) {
-  const [leased] = await dispatch.lease({ namespaceId, queueName, workerId: 'w' });
+  const [leased] = await dispatch.lease({
+    namespaceId,
+    queueName,
+    workerId: 'w',
+  });
   if (!leased) throw new Error(`nothing queued on ${queueName}`);
   await dispatch.report({
     namespaceId,
@@ -169,7 +200,9 @@ describe('pause and resume', () => {
     const wf = await start();
     await control.pause(wf.id, 'alice');
 
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.PAUSED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.PAUSED,
+    );
   });
 
   // PAUSED is not a terminal status, so without an explicit check the decider
@@ -209,7 +242,9 @@ describe('pause and resume', () => {
     await complete(wf.id, 'b');
     await drain(wf.id);
 
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.COMPLETED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.COMPLETED,
+    );
   });
 
   it('is idempotent in both directions', async () => {
@@ -219,7 +254,9 @@ describe('pause and resume', () => {
     await control.resume(wf.id, 'alice');
     await expect(control.resume(wf.id, 'alice')).resolves.toBeUndefined();
 
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.RUNNING);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.RUNNING,
+    );
   });
 
   it('refuses to pause a finished workflow', async () => {
@@ -227,7 +264,9 @@ describe('pause and resume', () => {
     await complete(wf.id, 'a');
     await drain(wf.id);
 
-    await expect(control.pause(wf.id, 'alice')).rejects.toThrow(/already COMPLETED/);
+    await expect(control.pause(wf.id, 'alice')).rejects.toThrow(
+      /already COMPLETED/,
+    );
   });
 
   it('records who paused it', async () => {
@@ -235,7 +274,9 @@ describe('pause and resume', () => {
     await control.pause(wf.id, 'alice');
 
     const history = await events.history(wf.id);
-    const paused = history.find((e) => e.type === WorkflowEventType.WORKFLOW_PAUSED);
+    const paused = history.find(
+      (e) => e.type === WorkflowEventType.WORKFLOW_PAUSED,
+    );
     expect(paused?.payload).toMatchObject({ by: 'alice' });
   });
 });
@@ -270,7 +311,11 @@ describe('terminate', () => {
     await control.terminate(wf.id, 'stop', 'alice');
 
     expect((await taskQueue.depth('a', namespaceId)).total).toBe(0);
-    const [leased] = await dispatch.lease({ namespaceId, queueName: 'a', workerId: 'w' });
+    const [leased] = await dispatch.lease({
+      namespaceId,
+      queueName: 'a',
+      workerId: 'w',
+    });
     expect(leased).toBeUndefined();
   });
 
@@ -329,7 +374,9 @@ describe('terminate', () => {
     const wf = await start();
     await control.terminate(wf.id, 'stop', 'alice');
 
-    await expect(control.terminate(wf.id, 'again', 'alice')).rejects.toThrow(/already TERMINATED/);
+    await expect(control.terminate(wf.id, 'again', 'alice')).rejects.toThrow(
+      /already TERMINATED/,
+    );
   });
 });
 
@@ -340,7 +387,9 @@ describe('retry', () => {
     await drain(wf.id);
     await complete(wf.id, 'b', TaskStatus.FAILED);
     await drain(wf.id);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.FAILED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.FAILED,
+    );
 
     expect(await control.retry(wf.id, 'alice')).toBe(1);
     await drain(wf.id);
@@ -352,9 +401,15 @@ describe('retry', () => {
       .execute();
 
     // 'a' keeps its result; only 'b' is runnable again.
-    expect(tasks.find((t) => t.refName === 'a')?.status).toBe(TaskStatus.COMPLETED);
-    expect(tasks.find((t) => t.refName === 'b')?.status).toBe(TaskStatus.SCHEDULED);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.RUNNING);
+    expect(tasks.find((t) => t.refName === 'a')?.status).toBe(
+      TaskStatus.COMPLETED,
+    );
+    expect(tasks.find((t) => t.refName === 'b')?.status).toBe(
+      TaskStatus.SCHEDULED,
+    );
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.RUNNING,
+    );
   });
 
   it('completes normally on the second attempt', async () => {
@@ -367,7 +422,9 @@ describe('retry', () => {
     await complete(wf.id, 'a');
     await drain(wf.id);
 
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.COMPLETED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.COMPLETED,
+    );
   });
 
   // Terminate cancels what was in flight; retrying must run it again rather
@@ -381,10 +438,14 @@ describe('retry', () => {
     expect(await control.retry(wf.id, 'alice')).toBe(1);
     await drain(wf.id);
 
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.RUNNING);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.RUNNING,
+    );
     await complete(wf.id, 'b');
     await drain(wf.id);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.COMPLETED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.COMPLETED,
+    );
   });
 
   it('reopens only the latest attempt of a task that used up its retries', async () => {
@@ -406,8 +467,16 @@ describe('retry', () => {
         .onConflict((oc) => oc.doNothing())
         .execute();
     }
-    await harness.db.updateTable('TaskExecutions').set({ status: TaskStatus.FAILED }).where('workflowId', '=', wf.id).execute();
-    await harness.db.updateTable('WorkflowExecutions').set({ status: WorkflowStatus.FAILED }).where('id', '=', wf.id).execute();
+    await harness.db
+      .updateTable('TaskExecutions')
+      .set({ status: TaskStatus.FAILED })
+      .where('workflowId', '=', wf.id)
+      .execute();
+    await harness.db
+      .updateTable('WorkflowExecutions')
+      .set({ status: WorkflowStatus.FAILED })
+      .where('id', '=', wf.id)
+      .execute();
 
     expect(await control.retry(wf.id, 'alice')).toBe(1);
     const scheduled = await harness.db
@@ -423,15 +492,23 @@ describe('retry', () => {
     const wf = await start({ tasks: [simple('a')] });
     await complete(wf.id, 'a');
     await drain(wf.id);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.COMPLETED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.COMPLETED,
+    );
 
-    await expect(control.retry(wf.id, 'alice')).rejects.toThrow(/nothing to retry|no failed or cancelled task/);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.COMPLETED);
+    await expect(control.retry(wf.id, 'alice')).rejects.toThrow(
+      /nothing to retry|no failed or cancelled task/,
+    );
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.COMPLETED,
+    );
   });
 
   it('refuses to retry a workflow that is still running', async () => {
     const wf = await start();
-    await expect(control.retry(wf.id, 'alice')).rejects.toThrow(/only a terminal workflow/);
+    await expect(control.retry(wf.id, 'alice')).rejects.toThrow(
+      /only a terminal workflow/,
+    );
   });
 });
 
@@ -455,19 +532,25 @@ describe('rerunFromTask', () => {
     const wf = await start({ tasks: [simple('a')] });
     await complete(wf.id, 'a');
     await drain(wf.id);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.COMPLETED);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.COMPLETED,
+    );
 
     await control.rerunFromTask(wf.id, 'a', 'alice');
     await drain(wf.id);
 
     // A fresh, runnable task exists and the workflow is live again.
     expect((await taskQueue.depth('a', namespaceId)).available).toBe(1);
-    expect((await workflows.findById(wf.id))?.status).toBe(WorkflowStatus.RUNNING);
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.RUNNING,
+    );
   });
 
   it('reports an unknown task rather than doing nothing', async () => {
     const wf = await start();
-    await expect(control.rerunFromTask(wf.id, 'nope', 'alice')).rejects.toThrow(/no task "nope"/);
+    await expect(control.rerunFromTask(wf.id, 'nope', 'alice')).rejects.toThrow(
+      /no task "nope"/,
+    );
   });
 });
 
@@ -483,7 +566,9 @@ describe('skipTask', () => {
       .where('workflowId', '=', wf.id)
       .execute();
 
-    expect(tasks.find((t) => t.refName === 'a')?.status).toBe(TaskStatus.SKIPPED);
+    expect(tasks.find((t) => t.refName === 'a')?.status).toBe(
+      TaskStatus.SKIPPED,
+    );
     expect(tasks.map((t) => t.refName)).toContain('b');
   });
 
@@ -496,7 +581,9 @@ describe('skipTask', () => {
 
   it('reports an unknown task', async () => {
     const wf = await start();
-    await expect(control.skipTask(wf.id, 'nope', 'alice')).rejects.toThrow(/no runnable task/);
+    await expect(control.skipTask(wf.id, 'nope', 'alice')).rejects.toThrow(
+      /no runnable task/,
+    );
   });
 
   it('refuses on a finished workflow', async () => {
@@ -504,7 +591,9 @@ describe('skipTask', () => {
     await complete(wf.id, 'a');
     await drain(wf.id);
 
-    await expect(control.skipTask(wf.id, 'a', 'alice')).rejects.toThrow(/already COMPLETED/);
+    await expect(control.skipTask(wf.id, 'a', 'alice')).rejects.toThrow(
+      /already COMPLETED/,
+    );
   });
 });
 
@@ -513,7 +602,9 @@ describe('missing workflows', () => {
 
   it('reports not found rather than succeeding silently', async () => {
     await expect(control.pause(absent, 'alice')).rejects.toThrow(/no workflow/);
-    await expect(control.terminate(absent, 'x', 'alice')).rejects.toThrow(/no workflow/);
+    await expect(control.terminate(absent, 'x', 'alice')).rejects.toThrow(
+      /no workflow/,
+    );
     await expect(control.retry(absent, 'alice')).rejects.toThrow(/no workflow/);
   });
 });
@@ -578,7 +669,9 @@ describe('cancelTask', () => {
 
   it('refuses a task that is not running', async () => {
     const wf = await start();
-    await expect(control.cancelTask(wf.id, 'b', 'alice')).rejects.toThrow(/no running task/);
+    await expect(control.cancelTask(wf.id, 'b', 'alice')).rejects.toThrow(
+      /no running task/,
+    );
   });
 
   it('refuses to cancel inside a finished workflow', async () => {
@@ -612,7 +705,10 @@ describe('rerunTasks', () => {
   it('re-runs only the named task by default, and says what is now stale', async () => {
     const wf = await finished();
 
-    const result = await control.rerunTasks(wf.id, ['a'], { by: 'alice', blueprints });
+    const result = await control.rerunTasks(wf.id, ['a'], {
+      by: 'alice',
+      blueprints,
+    });
 
     expect(result.rerun).toEqual(['a']);
     // `b` and `c` still hold outputs derived from the run of `a` being replaced.
@@ -627,9 +723,15 @@ describe('rerunTasks', () => {
       .where('workflowId', '=', wf.id)
       .execute();
 
-    expect(tasks.find((t) => t.refName === 'a')?.status).toBe(TaskStatus.SCHEDULED);
-    expect(tasks.find((t) => t.refName === 'b')?.status).toBe(TaskStatus.COMPLETED);
-    expect(tasks.find((t) => t.refName === 'c')?.status).toBe(TaskStatus.COMPLETED);
+    expect(tasks.find((t) => t.refName === 'a')?.status).toBe(
+      TaskStatus.SCHEDULED,
+    );
+    expect(tasks.find((t) => t.refName === 'b')?.status).toBe(
+      TaskStatus.COMPLETED,
+    );
+    expect(tasks.find((t) => t.refName === 'c')?.status).toBe(
+      TaskStatus.COMPLETED,
+    );
 
     // And a worker can actually reach it. Without the queue entry it would sit
     // SCHEDULED forever, looking healthy.
@@ -689,9 +791,9 @@ describe('rerunTasks', () => {
    */
   it('refuses while the workflow is running', async () => {
     const wf = await start(linear);
-    await expect(control.rerunTasks(wf.id, ['a'], { by: 'alice', blueprints })).rejects.toThrow(
-      /pause it before/
-    );
+    await expect(
+      control.rerunTasks(wf.id, ['a'], { by: 'alice', blueprints }),
+    ).rejects.toThrow(/pause it before/);
   });
 
   it('allows it once paused', async () => {
@@ -700,21 +802,91 @@ describe('rerunTasks', () => {
     await drain(wf.id);
     await control.pause(wf.id, 'alice');
 
-    const result = await control.rerunTasks(wf.id, ['a'], { by: 'alice', blueprints });
+    const result = await control.rerunTasks(wf.id, ['a'], {
+      by: 'alice',
+      blueprints,
+    });
     expect(result.rerun).toEqual(['a']);
   });
 
   it('names a task the definition does not have', async () => {
     const wf = await finished();
     await expect(
-      control.rerunTasks(wf.id, ['nonexistent'], { by: 'alice', blueprints })
+      control.rerunTasks(wf.id, ['nonexistent'], { by: 'alice', blueprints }),
     ).rejects.toThrow(/no task "nonexistent"/);
   });
 
   it('refuses an empty list rather than quietly doing nothing', async () => {
     const wf = await finished();
-    await expect(control.rerunTasks(wf.id, [], { by: 'alice', blueprints })).rejects.toThrow(
-      /at least one task/
-    );
+    await expect(
+      control.rerunTasks(wf.id, [], { by: 'alice', blueprints }),
+    ).rejects.toThrow(/at least one task/);
   });
+});
+
+/**
+ * The operator path and the decider both need the workflow row and the
+ * `DecideQueues` row. The decider's order is fixed by the lost-wakeup rule —
+ * claim first, workflow second — so the operator path has to match it or the
+ * two can take the pair in opposite orders and deadlock.
+ *
+ * This reached a release candidate: `pause`/`resume` answered 500 under a
+ * concurrent evaluation, roughly once in a few hundred CI runs, because the
+ * window is only as wide as one evaluation of one workflow.
+ */
+describe('lock ordering against a concurrent evaluation', () => {
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  /** Waits until some backend is parked on a lock, so the race is really set up. */
+  const untilSomethingBlocks = async () => {
+    for (let i = 0; i < 200; i++) {
+      const { rows } = await sql<{ blocked: number }>`
+        SELECT count(*)::int AS blocked
+        FROM pg_stat_activity
+        WHERE wait_event_type = 'Lock' AND datname = current_database()
+      `.execute(harness.db);
+      if ((rows[0]?.blocked ?? 0) > 0) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('no backend ever blocked — the race never happened');
+  };
+
+  it('an operator action racing an evaluation does not deadlock', async () => {
+    const wf = await start();
+    await decideQueue.enqueue(
+      namespaceId,
+      wf.id,
+      'a wakeup for the evaluator to claim',
+    );
+
+    const claimed = deferred();
+    const proceed = deferred();
+
+    // The decider's half, paused between its two locks.
+    const evaluation = harness.db.transaction().execute(async (tx) => {
+      await decideQueue.claimForEvaluation(wf.id, tx);
+      claimed.resolve();
+      await proceed.promise;
+      await workflows.lockForEvaluation(wf.id, tx);
+    });
+
+    await claimed.promise;
+
+    // The operator's half, which wants both of the same rows.
+    const operator = control.pause(wf.id, 'alice');
+
+    await untilSomethingBlocks();
+    proceed.resolve();
+
+    // Taken in opposite orders these deadlock and Postgres shoots one of them,
+    // surfacing as a 500 from an operator action that should always be safe.
+    await expect(Promise.all([evaluation, operator])).resolves.toBeDefined();
+    expect((await workflows.findById(wf.id))?.status).toBe(
+      WorkflowStatus.PAUSED,
+    );
+  }, 60_000);
 });
