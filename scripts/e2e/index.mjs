@@ -74,7 +74,9 @@ const chosen = wanted.length ? wanted : Object.keys(SECTIONS);
 for (const name of chosen) {
   const load = SECTIONS[name];
   if (!load) {
-    console.error(`unknown section "${name}" — known: ${Object.keys(SECTIONS).join(', ')}`);
+    console.error(
+      `unknown section "${name}" — known: ${Object.keys(SECTIONS).join(', ')}`,
+    );
     process.exit(2);
   }
   const module = await load();
@@ -92,3 +94,19 @@ for (const name of chosen) {
 }
 
 report();
+
+// Exit explicitly rather than waiting for the event loop to drain.
+//
+// `report` sets `process.exitCode` and returns, which is the tidy way to end a
+// Node program — but only when nothing is left holding the loop open. Some
+// section leaves a handle behind (no socket is open by then, so a timer), and
+// the result is a suite that prints `every feature check passed` and then sits
+// there. Locally that costs a Ctrl-C. In CI it is worse: a runner that never
+// returns is indistinguishable from one that hung, so a green run would burn
+// the job's whole timeout and be reported as a failure.
+//
+// The write-then-exit is deliberate: `console.log` to a pipe can be
+// asynchronous, and exiting without flushing truncates the summary — which
+// would take the count of what passed with it.
+await new Promise((resolve) => process.stdout.write('', resolve));
+process.exit(process.exitCode ?? 0);
