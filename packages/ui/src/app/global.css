@@ -1,0 +1,65 @@
+@import 'tailwindcss';
+/* HeroUI v3 ships a stylesheet rather than a Tailwind plugin. */
+@import '@heroui/react/styles';
+/* React Flow's structural styles: handles, edges, the viewport. */
+@import '@xyflow/react/dist/style.css';
+
+/*
+ * node-flow's theme.
+ *
+ * HeroUI's light and dark themes as the base, with three deliberate changes:
+ * an indigo accent, a cool-neutral canvas so white surfaces read as cards
+ * without heavy borders, and Geist as the typeface. Everything else — status
+ * colours, fields, overlays — stays HeroUI's, so every component agrees with
+ * every page without coordination.
+ */
+
+@theme {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, 'SFMono-Regular', monospace;
+}
+
+:root,
+.light,
+[data-theme='light'] {
+  --background: oklch(0.975 0.004 275);
+  --accent: oklch(0.55 0.2 275);
+  --accent-foreground: oklch(0.99 0 0);
+  --accent-hover: oklch(0.5 0.2 275);
+  --accent-soft: oklch(0.95 0.03 275);
+  --accent-soft-foreground: oklch(0.47 0.18 275);
+  --accent-soft-hover: oklch(0.92 0.045 275);
+  --focus: var(--accent);
+  --link: var(--accent);
+}
+
+.dark,
+[data-theme='dark'] {
+  --background: oklch(0.16 0.008 275);
+  --surface: oklch(0.2 0.01 275);
+  --overlay: oklch(0.22 0.01 275);
+  --accent: oklch(0.68 0.16 275);
+  --accent-foreground: oklch(0.16 0.01 275);
+  --accent-hover: oklch(0.73 0.15 275);
+  --accent-soft: oklch(0.3 0.06 275);
+  --accent-soft-foreground: oklch(0.82 0.1 275);
+  --accent-soft-hover: oklch(0.34 0.07 275);
+  --focus: var(--accent);
+  --link: var(--accent);
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Tabular figures wherever a count, time or duration appears. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* React Flow draws its own attribution/controls chrome; keep it on-theme. */
+.react-flow {
+  --xy-background-color: transparent;
+}
+
+

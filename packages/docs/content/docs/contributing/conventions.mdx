@@ -1,0 +1,375 @@
+---
+title: Conventions
+description: The code conventions actually used here, each with the failure it prevents — module boundaries, explicit transactions, the source export condition, error codes and the UI's hydration rules.
+---
+
+Nothing on this page is a style preference. Each convention is enforced by
+something — a lint rule, a compiler setting, a test, or module resolution — and
+each exists because its absence produced a real defect.
+
+## Transactions are explicit
+
+Repositories take a `tx` parameter. Every one of them.
+
+```ts
+async enqueue(namespaceId: string, workflowId: string, reason: string, tx?: Queryable): Promise<void>
+async claimForEvaluation(workflowId: string, tx: DbTransaction): Promise<boolean>
+```
+
+`Queryable` is `Db | DbTransaction`, so a repository composes into a caller's
+transaction or runs on its own pool connection. Where a transaction is
+*mandatory* — `claimForEvaluation` — the type says `DbTransaction` and the
+compiler enforces it.
+
+<Callout type="warn">
+  **No ambient transactions.** `nestjs-cls` and `@nestjs-cls/transactional` would
+  propagate a transaction through `AsyncLocalStorage`, and for ordinary CRUD
+  that is a nice ergonomic win. In an orchestrator the transaction boundary
+  **is** the correctness guarantee — which statements commit together is the
+  whole design — and making that invisible is how subtle, unreproducible bugs
+  get written.
+</Callout>
+
+Two consequences that have each bitten once:
+
+- **A method that takes an optional `tx` and is called without one must open its
+  own transaction if it needs one.** `completeTask` does, because it takes a
+  transaction-scoped advisory lock — and `pg_advisory_xact_lock` outside a
+  transaction is released the instant its own statement ends. It looked like
+  protection and provided none.
+- **`SET LOCAL` is silently ignored outside an explicit transaction.** The
+  `JDBC` task's statement timeout was written that way and enforced nothing;
+  `pg_sleep(5)` sailed past a 250 ms limit. It is `SET` now, session-scoped and
+  re-set before every statement on the connection.
+
+## Raw SQL stays in `store/`
+
+Every hand-written statement lives under `packages/store/src/lib/`. Nothing
+outside that package imports `kysely` to write SQL.
+
+Two helpers exist purely to keep that true rather than to be useful in
+themselves: `ping(db)` — the cheapest possible round trip, for the health
+endpoint — and `pendingMigrations(db)`. A health check is exactly the sort of
+small exception that erodes the rule.
+
+The corollary is that **data access is a typed builder, not an ORM**. Sequelize
+was removed: 30 raw SQL calls across four repositories against 9 model calls in
+one, ~700 lines of models plus a schema-drift test existing to serve those nine,
+and two compiler flags weakened package-wide to make decorators work. The deeper
+reason is that in this system SQL *is* the design — `FOR UPDATE SKIP LOCKED`
+inside a CTE, `ON CONFLICT DO NOTHING` as the idempotency guarantee, partition
+pruning. An ORM that cannot express them is not abstracting anything; it is a
+second way to do the easy tenth.
+
+## `.js` on every relative import
+
+`tsconfig.base.json` sets `"module": "nodenext"` and
+`"moduleResolution": "nodenext"`. Relative imports carry the extension the
+emitted file will have:
+
+```ts
+import { DecideQueueRepository } from './decide-queue.repository.js';
+import { compileBlueprint } from './blueprint.js';
+```
+
+Omitting it is a resolution failure, not a warning.
+
+## The `scope:pure` boundary
+
+The keystone constraint, in `eslint.config.mjs`:
+
+```jsonc
+{
+  "sourceTag": "scope:pure",
+  "onlyDependOnLibsWithTags": ["scope:pure"],
+  "bannedExternalImports": [
+    "@nestjs/*", "sequelize", "sequelize-typescript", "pg", "pg-*",
+    "umzug", "next", "react", "react-*", "undici", "ioredis", "kafkajs"
+  ]
+}
+```
+
+Tags live in each package's own `package.json`, under `nx.tags`:
+
+| Tag | Packages | Rule |
+|---|---|---|
+| `scope:pure` | `core`, `engine` | May depend only on `scope:pure`, plus the banned-import list above |
+| `scope:infra` | `store`, `tasks` | May build on pure and on each other; must not reach up into apps or client tooling |
+| `scope:client` | `sdk`, `testkit`, `bpmn` | Ships to users' machines, so no database driver — `sequelize`, `pg`, `pg-*`, `umzug` are banned |
+| `scope:app` | `server`, `cli`, `ui`, `bench`, `docs`, `server-e2e` | Composes everything |
+
+`cli` is deliberately **not** `scope:client`, and the exemption is recorded in
+the config next to the rule so it reads as a decision rather than a waiver.
+`nf bootstrap` and `nf migrate` exist precisely to do what the API cannot —
+create the first credential, and change the schema — so they run next to the
+database by design. It is an operator tool. `sdk` is the package that rule is
+really protecting.
+
+<Callout type="warn">
+  `bannedExternalImports` only flags packages **installed in the workspace**. A
+  ban on something that is not a dependency at all is not enforcement. The
+  second defence — module resolution — is what covers that case, and it holds
+  only while pnpm's `nodeLinker: isolated` stays and the workspace-root
+  `dependencies` block stays empty. See
+  [The engine](/docs/contributing/engine) for the full argument.
+</Callout>
+
+After adding a dependency from one workspace package to another, run
+**`pnpm nx sync`** to write the TypeScript project reference. Without it the
+build fails with an out-of-sync error that does not name the cause.
+
+## The `@node-flow-dev/source` export condition
+
+This is the mechanism that makes builds, type-checking and tests all resolve
+workspace packages to their **TypeScript source** rather than a built `dist/`.
+
+<Callout type="warn">
+  **It must agree in three places.** If they drift, tests quietly resolve to a
+  stale `dist` instead of source — and a fix that appeared not to work may in
+  fact have landed.
+</Callout>
+
+<Mermaid
+  title="The three places that must agree"
+  chart={`
+flowchart TB
+  A["tsconfig.base.json<br/>customConditions: node-flow-dev/source"] --> X["All three resolve to src/index.ts"]
+  B["each package's exports map<br/>node-flow-dev/source: ./src/index.ts<br/>alongside types, import, default"] --> X
+  C["each vitest.config.mts<br/>resolve.conditions: node-flow-dev/source"] --> X
+  X --> OK["build, typecheck and test<br/>all run the same code"]
+  D["A package missing one of them"] --> BAD["Falls through to the import condition,<br/>loads a sibling's built dist/,<br/>and silently tests old code"]
+`}
+/>
+
+Nine packages carry all three today. A new library needs all three, and the
+`vitest.config.mts` line is the one most easily forgotten because everything
+still *works* without it — just against the wrong code.
+
+The condition is also renamed along with everything else by
+`scripts/rename-scope.mjs`, and the trial run's passing tests are precisely what
+proves the three places still agree.
+
+## Declare dependencies where they are used
+
+**Never at the workspace root.** Module resolution walks *up* the directory
+tree, so anything in the root `package.json` is reachable from every package
+regardless of package manager — which silently disables the purity boundary's
+second defence across the whole workspace.
+
+This is also how the container once died on boot. Nx's default
+`externalDependencies: 'all'` runs `webpack-node-externals` against the
+**workspace root** `node_modules`. Under npm's flat hoisting that is roughly
+every dependency; under pnpm it is only what the root declares — so whether a
+module was bundled depended on where it happened to be declared, not on anything
+about the dependency. `tslib` and `@node-saml/node-saml` fell out of the bundle
+that way. The fix was `externalDependencies: 'none'` plus moving the dependency
+to the package that imports it.
+
+`pnpm-workspace.yaml` carries three settings whose comments are the
+documentation, and all three are load-bearing:
+
+- **`nodeLinker: isolated`** — never `hoisted`, never `shamefully-hoist`. This
+  is what makes an undeclared import fail at module resolution rather than only
+  at lint.
+- **`autoInstallPeers` / `strictPeerDependencies: false`** — NestJS declares a
+  wide web of *optional* peers (`platform-express`, `websockets`,
+  `microservices`) that we deliberately omit; pnpm is stricter than npm here and
+  would otherwise fail the install.
+- **`allowBuilds`** — pnpm blocks dependency build scripts by default, which is
+  the right supply-chain default. Each allowed one is listed with what it needs
+  to compile or fetch, and each **denied** one is listed with why it is not
+  needed. `@confluentinc/kafka-javascript` is denied because it arrives
+  transitively with `@testcontainers/redpanda` while our Kafka code uses
+  `kafkajs`; pnpm had written a *placeholder* there, which is not a boolean and
+  made every install exit with an error.
+
+## Errors carry codes, not messages
+
+`packages/core/src/lib/errors.ts` defines `NodeFlowError` with a stable
+`ErrorCode`, so the API layer maps to an HTTP status without string-matching and
+operators can alert on classes of failure rather than on text that changes.
+
+| Code | Maps to | Used for |
+|---|---|---|
+| `INVALID_DEFINITION` | 400 | A workflow or task definition that fails validation or referential integrity |
+| `COMPILATION_FAILED` | 400 | Structurally valid, but the blueprint could not be built |
+| `INVALID_ARGUMENT` | 400 | Malformed input no schema could catch — a cursor that does not decode |
+| `NOT_FOUND` | 404 | Including anything the caller may not reach, deliberately |
+| `CONFLICT` | 409 | A duplicate workflow version, a duplicate namespace slug, a lost claim race |
+| `LIMIT_EXCEEDED` | 429 | Quotas and rate limits, always with `Retry-After` |
+| `LEASE_EXPIRED`, `TERMINAL_STATE` | 409 | Fencing and operator-action refusals |
+
+Three rules fall out:
+
+- **A bare `Error` becomes a 500.** `INVALID_ARGUMENT` exists precisely because
+  a malformed cursor threw one and the domain filter could not recognise it —
+  telling the caller the server is broken when in fact their input was.
+- **409 is not 400.** Registering an existing workflow version returned 400,
+  leaving a client unable to tell "already done" from "malformed" without
+  matching on the message. Both cases also translate the Postgres
+  unique-constraint violation, so the loser of a race gets the same 409 rather
+  than a 500.
+- **An unreachable resource is reported as absent, never as forbidden.**
+  Distinguishing them tells a caller that a workflow with that name exists in a
+  space they cannot see — the same disclosure the namespace check exists to
+  prevent. A malformed execution id is a 404 too: it reached Postgres, which
+  rejected it before the query ran, and the driver error escaped as a **500
+  carrying a fragment of the storage layer**. Every id-bearing execution route
+  funnels through one `load()` so one guard covers all ten.
+
+## zod is the single source of truth
+
+The DSL is defined once, in `core`, as zod schemas. Those same objects validate
+requests (through a small zod pipe, not `class-validator` DTOs) and generate the
+OpenAPI document (`z.toJSONSchema()` emits JSON Schema 2020-12, which is exactly
+the dialect OpenAPI 3.1 consumes).
+
+Re-declaring those shapes as decorator DTOs is precisely the duplication that
+lets an API and an engine drift apart.
+
+<Callout type="warn">
+  `@ApiRoute` takes the response schema separately from the `@Body(zodBody(…))`
+  pipe that enforces the request, **so the two can silently disagree** — and did,
+  on 19 endpoints, so the generated Python, Go, Java and TypeScript clients
+  exposed them with no body parameter. The durable fix is not declaring the
+  nineteen; it is the test that now walks **every** controller and fails when a
+  route validates a body it does not document. A spot check cannot find a gap in
+  a population.
+</Callout>
+
+The generated document also has to survive real client generators, which is why
+recursive `$defs` are hoisted into `components/schemas`, every operation has a
+unique `controller_handler` id, `z.date()` renders as
+`{ type: 'string', format: 'date-time' }` with no regex beside it, JavaScript's
+safe-integer bounds are removed (they overflow Go's `int32`), and "any JSON
+value" is `{}` rather than a recursive six-way union.
+
+## NestJS conventions
+
+- **Controllers are thin**: validate, delegate to a service, map to a DTO.
+  Services own orchestration. Repositories own SQL.
+- **Default-deny authorization.** The guard is registered through `APP_GUARD`,
+  so a new controller is protected the moment it exists and opting out takes an
+  explicit `@Public()`. The mistake in the other direction is the *absence* of a
+  line, which is invisible in review.
+- **A guard that opens when its precondition is missing is not a guard.** The
+  namespace check was once a second global guard in a different module, so their
+  relative order was Nest's to decide; reached before a principal existed it hit
+  `if (!principal) return true` and allowed the request. Both checks are now one
+  guard, in one order. The failure was not the missing check but the
+  **fail-open default** underneath it.
+- **Guards run before interceptors.** A 403 from `@RequireScopes` never reaches
+  an interceptor, so audit denials are recorded by the guard itself — and
+  best-effort, so a failed log entry cannot turn a 403 into a 500.
+- **Keep the application HTTP-adapter-agnostic.** No `@Res()`, no
+  adapter-shaped middleware in controllers. `main.ts` is the only file that
+  knows Fastify is underneath, and an e2e assertion pins the adapter at the wire
+  level so a silent revert to Express fails a test.
+- **`server` tests run on vitest with `unplugin-swc`**, configured with
+  `legacyDecorator` and `decoratorMetadata`. That is not optional: vitest
+  transpiles with esbuild, which emits no `design:paramtypes`. NestJS reads
+  exactly that to resolve constructor injection, and without it **DI does not
+  throw** — it resolves every dependency to `undefined` and tests fail later
+  with unrelated errors.
+
+### Required parameters, not optional ones
+
+<Callout type="warn">
+  **An optional dependency is a silent-disable waiting to happen.** Four
+  features in this codebase have been disabled by a DI factory not passing an
+  optional constructor argument, each time invisible to every unit test because
+  those tests construct their own collaborators.
+</Callout>
+
+Two things follow, and both are now the pattern:
+
+- **Delete the quiet return.** Scheduling a `WAIT_FOR_WEBHOOK` with no webhook
+  repository now throws, because a task that can only be completed by a callback
+  is unrunnable without one. A wiring mistake must be a loud failure at schedule
+  time, not a workflow that hangs until its timeout.
+- **Prefer a required parameter.** `listWorkflows` and `getWorkflowDefinition`
+  take the caller's access as a **required** argument. An optional one is
+  precisely the shape where a caller that forgets it gets full visibility and no
+  error; required means the compiler asks the question at every call site — and
+  it immediately did, catching the scheduler and the event dispatcher, which
+  turned out to want something different.
+
+## UI: nothing clock- or timezone-dependent in markup
+
+<Callout type="warn">
+  **No page may render a clock- or timezone-dependent string as JSX text.** Use
+  `<Ago>` or `<LocalTime>` from `packages/ui/src/components/ui/`.
+</Callout>
+
+Two of these shipped, and they wore the same error code for different reasons.
+`formatRelative` reads `Date.now()`, so the server rendered "just now" and the
+browser, hydrating a moment later, rendered "1 min ago" — a disagreement about
+*when*. `formatDateTime` is built from `getFullYear()` / `getHours()`, which
+read the renderer's timezone, so a UTC container and an operator anywhere else
+disagreed about *where* — and that one is not a race, it is every timestamp,
+every time.
+
+React's response to a hydration mismatch is to throw away the server-rendered
+HTML for the surrounding tree and rebuild it on the client. **Nothing looks
+wrong** — that is the trap. The page renders correctly, and the server render it
+discarded was the point.
+
+`<Ago>` and `<LocalTime>` carry `suppressHydrationWarning`, which tells React
+the difference is expected. It belongs on the element holding the text rather
+than anywhere further out: it covers an element's own attributes and its direct
+text children only, so a wrapper further up would suppress nothing. That is also
+why `title={formatDateTime(x)}` is deliberately still allowed.
+
+Rendering UTC on both sides would also have worked and would have been wrong: an
+absolute time is there so an operator can line it up against their own clock.
+
+Fixing twenty call sites does not hold, because the helpers are ordinary
+exported functions and the next page to show a timestamp will reach for them
+again. So the rule is a test rather than something to remember:
+**`packages/ui/specs/no-clock-in-markup.spec.ts`** walks every `.tsx` file under
+`src/` and fails on `{formatDateTime(`, `{formatTime(` or `{formatRelative(` in
+JSX text position. `components/ui` is exempt, because that is where the
+suppression lives.
+
+The same page also produced the other hydration rule worth knowing:
+`Dropdown.Trigger` **is** a button — its props extend React Aria's `Button` — so
+a `<Button>` placed inside it emitted `<button><button>`, which the HTML parser
+flattens to siblings. It had spread to eleven call sites because nothing about
+it is visible: the component looks right, behaves right, and only the console
+carries a minified error code.
+
+## Comments record the reason
+
+Read almost any file in `store/` or `engine/` and the comments are about *why*,
+often naming the bug the code prevents. That is the house style and it is worth
+keeping, for one specific reason:
+
+> Its comment described the right behaviour while the code did something
+> weaker, and **the comment is what everyone reads**.
+
+That was the readiness check, which asserted only that *some* migrations had run
+while promising "the schema is at the revision this build expects". So the rule
+is not "write more comments" — it is that a comment making a promise is a
+liability unless something enforces the promise. Where a comment states an
+invariant, there should be a test that fails when it is broken, and the comment
+should say so.
+
+## Renaming the npm scope
+
+`scripts/rename-scope.mjs` rewrites every occurrence of the package scope —
+388 occurrences across 246 files — and was verified by running it against a full
+copy of the repository and building there.
+
+Two things it deliberately leaves alone, both found by the dry run rather than
+by reasoning:
+
+- **`pnpm-lock.yaml`**, because it is derived. `pnpm install` rewrites it from
+  the manifests, and a hand-edited lockfile disagrees with its own integrity
+  hashes — it looks like it worked and fails at the next `--frozen-lockfile`
+  install.
+- **The script itself**, which names the old scope in its own constant and would
+  otherwise be unable to find anything the second time it ran.
+
+Nx project names (`core`, `server`, …) are **not** renamed. They are internal
+identifiers in the task graph and in every `nx run` anyone has typed, and have
+nothing to do with what npm calls a package.

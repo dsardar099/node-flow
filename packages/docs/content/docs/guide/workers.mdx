@@ -1,0 +1,651 @@
+---
+title: Workers
+description: Implementing SIMPLE tasks — the SDK, the raw protocol, leases, heartbeats, idempotency and domains.
+---
+
+A `SIMPLE` task is one nothing will run until a process of yours leases it. That
+process is a **worker**, and the whole point of the model is that it is small:
+any program that can make three HTTP calls is a worker, in any language, holding
+no orchestrator runtime.
+
+<Callout type="info">
+  Keeping an existing Conductor worker? Follow the
+  [Conductor compatibility guide](/docs/guide/conductor) for SDK configuration,
+  credentials, polling examples, and the differences from native lease fencing.
+  This page describes the native node-flow worker protocol.
+</Callout>
+
+## The protocol
+
+Three calls. That is all of it.
+
+<Mermaid
+  title="The worker protocol, end to end"
+  chart={`
+sequenceDiagram
+  autonumber
+  participant W as Worker
+  participant S as node-flow (api role)
+  participant D as Decider
+
+  W->>S: POST /ns/{ns}/queues/{queue}/lease<br/>workerId, count, waitSeconds, leaseSeconds
+  Note over S: parks until a task appears,<br/>or waitSeconds elapses
+  S-->>W: tasks[]: taskId, workflowId, leaseToken,<br/>leaseExpiresAt, traceparent, input
+
+  loop while working
+    W->>S: POST /ns/{ns}/tasks/{taskId}/heartbeat<br/>queueName, leaseToken, leaseSeconds
+    S-->>W: renewed, or 409 LEASE_EXPIRED
+  end
+
+  opt anything worth recording
+    W->>S: POST /ns/{ns}/tasks/{taskId}/logs<br/>workflowId, leaseToken, logs[]
+  end
+
+  W->>S: POST /ns/{ns}/tasks/{taskId}/report<br/>queueName, workflowId, leaseToken, status, output
+  S->>D: enqueue an evaluation
+`}
+/>
+
+| Call | Path | Scope |
+|---|---|---|
+| Lease | `POST /v1/ns/{ns}/queues/{queue}/lease` | `queues:lease:{queue}` |
+| Heartbeat | `POST /v1/ns/{ns}/tasks/{taskId}/heartbeat` | `tasks:report` |
+| Logs | `POST /v1/ns/{ns}/tasks/{taskId}/logs` | `tasks:report` |
+| Report | `POST /v1/ns/{ns}/tasks/{taskId}/report` | `tasks:report` |
+
+Reporting needs no per-queue scope because it is fenced by the lease token: you
+cannot report a task you do not hold.
+
+## The TypeScript SDK
+
+```bash
+npm install @node-flow-dev/sdk
+```
+
+```ts title="worker.ts"
+import { NodeFlowClient, Worker, TerminalTaskError } from '@node-flow-dev/sdk';
+
+const client = new NodeFlowClient({
+  baseUrl: 'http://localhost:3000',   // the ORIGIN; the client appends /v1
+  namespace: 'default',
+  serviceAccount: {                    // or: apiKey: process.env.NF_API_KEY
+    keyId: process.env.NF_KEY_ID!,
+    secret: process.env.NF_KEY_SECRET!,
+  },
+});
+
+const worker = new Worker({
+  client,
+  queue: 'charge',
+  concurrency: 8,
+  waitSeconds: 30,
+  leaseSeconds: 60,
+  workerId: `charge-${process.env.HOSTNAME ?? 'local'}`,
+  onError: (error, ctx) => console.error(ctx.queue, ctx.taskId, error),
+
+  handler: async ({ input, workflowId, taskId, log, heartbeat, signal }) => {
+    log(`charging ${input['amount']} for workflow ${workflowId}`);
+
+    const result = await charge(
+      { amount: input['amount'], idempotencyKey: taskId },
+      { signal },
+    );
+
+    if (result.declined) {
+      // Never retried: the engine skips the retry budget entirely.
+      throw new TerminalTaskError(`card declined: ${result.code}`);
+    }
+
+    await heartbeat(); // if the next bit may outlive the lease
+
+    return { txnId: result.id };
+  },
+});
+
+worker.start();
+
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(sig, () => void worker.stop().then(() => process.exit(0)));
+}
+```
+
+### `WorkerOptions`
+
+| Option | Default | Meaning |
+|---|---|---|
+| `client` | — | A `NodeFlowClient`. |
+| `queue` | — | The queue name: `taskDefName`, or `taskDefName:domain`. |
+| `handler` | — | Your function. |
+| `workerId` | `${HOSTNAME}-${pid}` | Identifies this process in the execution view and the worker dashboard. |
+| `concurrency` | `1` | Maximum tasks in flight. **The single most important knob here.** |
+| `waitSeconds` | `30` | Long-poll duration. `0` returns immediately. |
+| `leaseSeconds` | `60` | How long a lease is held before it must be renewed. |
+| `heartbeatSeconds` | `leaseSeconds / 3` | A third, not a half, so two heartbeats can be lost to a network blip before the lease actually expires. |
+| `onError` | — | Called for poll failures, handler throws, heartbeat failures and log-send failures. |
+
+### `TaskContext`
+
+| Field | |
+|---|---|
+| `taskId` | Stable across retries of the *same attempt*; a new attempt is a new task id. |
+| `workflowId` | The run this task belongs to. |
+| `input` | The task's `inputParameters`, **resolved**: offloaded payloads inlined, `${secrets.x}` substituted, sealed fields opened. A handler sees plain values. |
+| `heartbeat()` | Extends the lease now. |
+| `signal` | Aborts when the worker is shutting down. |
+| `log(message, level?)` | Buffered, batched, flushed before the result. Never throws. |
+
+### What the `Worker` class actually does for you
+
+- **Never holds more work than it can run.** At capacity it waits for a slot
+  rather than leasing tasks it cannot start — a lease held by nobody working on
+  it is reclaimed as abandoned.
+- **Heartbeats automatically** at a third of the lease, for every in-flight task.
+- **Batches logs**: sent every two seconds, at 50 lines, and on close. A send
+  failure is reported and dropped, never thrown — losing a log line must not fail
+  the task it describes.
+- **Puts the failure in the log.** A handler that throws has its stack written to
+  the task's log before the failure is reported, so the lines explaining a
+  failure are there when someone opens the failed task.
+- **Backs off** when the server is unreachable: 1 s for a retryable error, 5 s
+  for a non-retryable one. Without this, a server that is down turns every worker
+  into a tight reconnect loop.
+- **Drains on shutdown.** `stop()` aborts the parked long-poll *immediately* — so
+  shutdown does not take `waitSeconds` — then waits for in-flight tasks to
+  finish. That is the difference between an invisible rolling deploy and a burst
+  of timed-out tasks every time.
+- **Tolerates a lost lease.** A report refused with `LEASE_EXPIRED` is swallowed:
+  the lease expired and another worker has the task, so this result is genuinely
+  unwanted, and logging it would fill the log during exactly the incident that
+  caused the expiry.
+
+### Reporting an outcome
+
+| Handler does | Reported as |
+|---|---|
+| returns an object | `COMPLETED` with that output |
+| returns nothing | `COMPLETED` with `{}` |
+| throws anything | `FAILED` — retried if attempts remain |
+| throws `TerminalTaskError` | `FAILED_WITH_TERMINAL_ERROR` — **never** retried |
+
+<Callout type="info">
+  `FAILED_WITH_TERMINAL_ERROR` is how a worker says "this input will never
+  succeed, stop burning attempts on it". Retrying a malformed payload twenty
+  times helps nobody and delays the failure the caller needs to see. Use it for
+  validation failures, declined cards, 404s from a dependency — anything where
+  the same input gives the same answer.
+</Callout>
+
+## Authentication: API key or service account
+
+| | API key | Service account |
+|---|---|---|
+| Header | `X-API-Key: nf_...` | `Authorization: Bearer <jwt>` |
+| Lifetime | Long-lived, optional expiry | Short-lived token, refreshed automatically |
+| Verification cost | A database lookup per request | A signature check, no round trip |
+| Right for | CI jobs, the CLI, scripts | **Long-running worker fleets** |
+
+A worker polls continuously, so the signature-only path matters. The SDK
+exchanges the key and secret once at startup and refreshes 60 seconds before
+expiry; concurrent callers share one refresh, so a worker polling eight queues
+does not mint eight tokens the moment one expires.
+
+```ts
+const client = new NodeFlowClient({
+  baseUrl: 'http://localhost:3000',
+  namespace: 'default',
+  serviceAccount: { keyId: '...', secret: '...' },
+  timeoutMs: 30_000,
+});
+```
+
+Exchange it by hand if you are not using the SDK:
+
+```bash
+curl -s -X POST "$NF_URL/v1/auth/token" \
+  -H 'content-type: application/json' \
+  -d '{"keyId":"...","secret":"..."}'
+# { "accessToken": "eyJ...", "tokenType": "Bearer", "expiresIn": 3600, "scopes": [...] }
+```
+
+### Scopes a worker needs
+
+```json
+{
+  "name": "charge-fleet",
+  "scopes": ["queues:lease:charge", "tasks:report"]
+}
+```
+
+Grant the narrowest thing that works. A fleet that processes `charge` should not
+be able to drain `send_email`, and expressing that needs the queue in the scope.
+`queues:lease:charge:*` grants every domain of one task; `queues:lease:*` grants
+every queue.
+
+## Leases, expiry and fencing
+
+<Mermaid
+  title="What a lease protects"
+  chart={`
+stateDiagram-v2
+  [*] --> Queued: decider schedules
+  Queued --> Leased: worker A leases (token T1)
+  Leased --> Leased: heartbeat renews
+  Leased --> Queued: lease expires (no heartbeat)
+  Queued --> Leased2: worker B leases (token T2)
+  Leased2 --> Done: B reports with T2 -- accepted
+  Leased --> Refused: A reports with T1 -- 409 LEASE_EXPIRED
+  Done --> [*]
+`}
+/>
+
+- `leaseSeconds` on the lease request is **clamped** server-side; an unbounded
+  lease from a worker that then dies makes its task unrecoverable for as long as
+  it asked for.
+- A heartbeat that returns **409** means the lease is gone. Stop working: your
+  result would be refused anyway, and knowing now lets you abandon rather than
+  finish and be rejected.
+- Every write — heartbeat, logs, report — carries the lease token. This is the
+  one thing that makes lease expiry safe: a worker that lost its lease cannot
+  write over whoever holds the task now.
+
+### Choosing the numbers
+
+| Work takes | `leaseSeconds` | `heartbeatSeconds` |
+|---|---|---|
+| under a second | 60 (default) | default — heartbeats will not even fire |
+| tens of seconds | 60 | 20 (default) |
+| minutes, predictable | 120–300 | a third of it |
+| minutes, unpredictable | 60, and heartbeat from the handler | a third of it |
+
+A long lease is not free: it is how long a crashed worker's task is stuck before
+anyone else can take it. Prefer a short lease plus heartbeats.
+
+## Idempotency
+
+**Every task may be delivered more than once.** A lease can expire mid-work and
+another worker can pick the task up; a retry after a failure is a fresh attempt
+on the same logical step. So a handler that has side effects needs a key.
+
+The `taskId` is the right key for most cases: it is stable for one attempt and
+distinct per retry, so it deduplicates the "delivered twice" case without
+suppressing an intentional retry.
+
+```ts
+handler: async ({ taskId, input }) => {
+  const result = await stripe.charges.create(
+    { amount: input['amount'] as number, currency: 'gbp' },
+    { idempotencyKey: taskId },     // survives redelivery
+  );
+  return { txnId: result.id };
+}
+```
+
+If you want a retry to reuse the same downstream key — "charge once, however
+many attempts we make" — derive it from the workflow instead:
+
+```ts
+handler: async ({ workflowId, input }) => {
+  const key = `${workflowId}:charge`;
+  // ...
+}
+```
+
+Which you want depends on whether a failed attempt left something behind. Both
+are legitimate; the wrong answer is no key at all.
+
+<Callout type="info">
+  The engine's own at-least-once surfaces already carry keys you can rely on:
+  `EVENT` and `KAFKA_PUBLISH` publish with `workflowId:refName:iteration`, a
+  `START_WORKFLOW` starts with the same, and a failure workflow starts with
+  `failure-workflow:{workflowId}`.
+</Callout>
+
+## Caching, instead of idempotency
+
+Sometimes the right answer is not to run the task twice at all. `cacheConfig` on
+the workflow task reuses a previous successful output for the same resolved key:
+
+```json
+{
+  "name": "expensive_lookup",
+  "taskReferenceName": "lookup",
+  "type": "SIMPLE",
+  "cacheConfig": { "key": "${workflow.input.customerId}", "ttlInSecond": 300 }
+}
+```
+
+A second run with the same key completes **without a worker ever seeing it**.
+The task is an ordinary completed task; the execution history records
+`fromCache: true`, because "why did this finish without anyone running it?" is a
+question an operator needs answered. A key that resolves to nothing caches
+nothing — two unrelated runs sharing the empty key would hand each other their
+results.
+
+## Domains: routing to a specific fleet
+
+A domain turns the queue name into `taskDefName:domain`, which a different fleet
+polls.
+
+```ts
+new Worker({ client, queue: 'charge:eu-west', handler });
+```
+
+Set it from any of three places, most specific first:
+
+```bash
+# 1. Per run, at start — the usual choice for canaries and tenant pinning
+curl -X POST "$NF_URL/v1/ns/default/executions/fulfil_order" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"input":{},"taskToDomain":{"charge":"eu-west","*":"canary"}}'
+```
+
+```json
+// 2. Per sub-workflow, so a child lands on the same fleet as its parent
+{
+  "type": "SUB_WORKFLOW",
+  "subWorkflowParam": { "name": "fulfilment", "taskToDomain": { "*": "eu-west" } }
+}
+```
+
+```json
+// 3. Per task, in the definition
+{ "name": "charge", "taskReferenceName": "charge", "type": "SIMPLE", "domain": "eu-west" }
+```
+
+A task's own name in `taskToDomain` wins over `*`, and both win over the
+definition's `domain`.
+
+Common uses:
+
+- **Canary** — deploy a new worker build on `charge:canary`, start a few runs
+  with `{"*": "canary"}`, and nothing else is affected.
+- **Region or data residency** — EU orders to `charge:eu-west`.
+- **Development** — point your laptop at `charge:yourname` and start runs with
+  that domain, so you never steal a shared queue's work.
+
+<Callout type="warn">
+  Domains are also an access boundary. `queues:lease:charge` does **not** cover
+  `charge:eu-west` — a fleet must be named explicitly, or the isolation the
+  domain exists to provide would be decorative.
+</Callout>
+
+## Writing a worker in another language
+
+There is no SDK requirement. Here is a complete worker in Python with nothing
+but `requests`, which demonstrates every part of the protocol.
+
+```python title="worker.py"
+import os, signal, threading, time
+import requests
+
+BASE  = os.environ["NF_URL"]          # http://localhost:3000
+NS    = os.environ.get("NF_NAMESPACE", "default")
+QUEUE = "charge"
+WORKER_ID = f"py-{os.getpid()}"
+LEASE_SECONDS = 60
+
+session = requests.Session()
+session.headers["x-api-key"] = os.environ["NF_API_KEY"]
+
+stop = threading.Event()
+signal.signal(signal.SIGTERM, lambda *_: stop.set())
+signal.signal(signal.SIGINT,  lambda *_: stop.set())
+
+
+def lease():
+    r = session.post(
+        f"{BASE}/v1/ns/{NS}/queues/{QUEUE}/lease",
+        json={
+            "workerId": WORKER_ID,
+            "count": 1,
+            # Park on the server. The read timeout must exceed this, or the
+            # client aborts its own long poll.
+            "waitSeconds": 30,
+            "leaseSeconds": LEASE_SECONDS,
+        },
+        timeout=(5, 40),
+    )
+    r.raise_for_status()
+    return r.json()["tasks"]
+
+
+def heartbeat(task):
+    r = session.post(
+        f"{BASE}/v1/ns/{NS}/tasks/{task['taskId']}/heartbeat",
+        json={
+            "queueName": QUEUE,
+            "leaseToken": task["leaseToken"],
+            "leaseSeconds": LEASE_SECONDS,
+        },
+        timeout=10,
+    )
+    # 409 means the lease is gone: stop working, the result would be refused.
+    return r.status_code != 409
+
+
+def log(task, message, level="info"):
+    session.post(
+        f"{BASE}/v1/ns/{NS}/tasks/{task['taskId']}/logs",
+        json={
+            "workflowId": task["workflowId"],
+            "leaseToken": task["leaseToken"],
+            "logs": [{"message": message, "level": level}],
+        },
+        timeout=10,
+    )
+
+
+def report(task, status, output=None, reason=None):
+    body = {
+        "queueName": QUEUE,
+        "workflowId": task["workflowId"],
+        "leaseToken": task["leaseToken"],
+        "status": status,
+    }
+    if output is not None:
+        body["output"] = output
+    if reason is not None:
+        body["reason"] = reason
+    session.post(
+        f"{BASE}/v1/ns/{NS}/tasks/{task['taskId']}/report", json=body, timeout=10
+    )
+
+
+class Terminal(Exception):
+    """Raise for work that will never succeed on the same input."""
+
+
+def handle(task):
+    amount = task["input"]["amount"]
+    if not isinstance(amount, (int, float)):
+        raise Terminal(f"amount is not a number: {amount!r}")
+    # `taskId` as the downstream idempotency key: stable across redelivery of
+    # this attempt, distinct per retry.
+    return {"txnId": charge(amount, idempotency_key=task["taskId"])}
+
+
+while not stop.is_set():
+    try:
+        for task in lease():
+            beat = threading.Timer(LEASE_SECONDS / 3, lambda t=task: heartbeat(t))
+            beat.daemon = True
+            beat.start()
+            try:
+                log(task, "charging")
+                report(task, "COMPLETED", output=handle(task))
+            except Terminal as e:
+                report(task, "FAILED_WITH_TERMINAL_ERROR", reason=str(e))
+            except Exception as e:                       # noqa: BLE001
+                report(task, "FAILED", reason=str(e))
+            finally:
+                beat.cancel()
+    except Exception as e:                               # noqa: BLE001
+        print("poll failed:", e)
+        # Back off, or a server that is down gets a tight reconnect loop.
+        stop.wait(1.0)
+```
+
+The same shape works anywhere. The rules that are not obvious from the endpoints
+alone:
+
+1. **Your HTTP read timeout must exceed `waitSeconds`**, or the client aborts
+   its own long poll. The TypeScript SDK uses `waitSeconds + 10`.
+2. **Never lease more than you can start.** Ask for `capacity` tasks, where
+   capacity is your concurrency minus what is in flight.
+3. **Send the lease token on every write.** Heartbeat, logs and report all
+   require it.
+4. **Send `queueName` on heartbeat and report.** It is not redundancy: the queue
+   table is hash-partitioned on it, and its unique index must include the
+   partition key, so acknowledging without it would scan every partition.
+5. **Back off on poll failure**, and treat a 4xx differently from a 5xx.
+6. **Drain on `SIGTERM`.** Abandoning leases produces a burst of timed-out tasks
+   on every deploy.
+7. **Treat 409 on report as success.** The lease expired and someone else has
+   the task; your result was genuinely unwanted.
+
+### Generated clients
+
+`clients/` in the repository holds clients generated from the server's OpenAPI
+document for Python, Go, Java and TypeScript. They are the API, not a worker
+SDK — no leasing, heartbeating or draining on top — but they save writing the
+request plumbing. See [API → generated clients](/docs/guide/api#generated-clients).
+
+## Tracing
+
+A leased task carries `traceparent` when the run was started by a traced caller:
+
+```ts
+handler: async ({ input }) => { /* ... */ }
+// The raw task also has: leased.traceparent === '00-<traceid>-<spanid>-01'
+```
+
+Use it as the parent of your own spans and one trace covers the API call that
+started the workflow, the engine that scheduled the task, and the work itself —
+the difference between "the workflow was slow" and "its third task's call to
+billing took nine seconds".
+
+The SDK's `client.lease(...)` returns `LeasedTask` objects with `traceparent` on
+them; the `Worker` class does not currently forward it to the handler, so use
+the client directly if you need it.
+
+## Operating a fleet
+
+### Is anyone listening?
+
+```bash
+# Depth says work is waiting.
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/queues/charge/depth"
+
+# This says whether anyone is polling — the difference between
+# "the fleet is slow" and "the fleet is on the wrong domain".
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/queues/workers"
+
+# Everything currently backed up.
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/queues"
+```
+
+A worker is recorded as polling **before** it waits, so a worker parked on an
+empty queue still counts as listening.
+
+### Autoscaling
+
+Scale on **queue depth**, not CPU. `GET /v1/ns/{ns}/queues/{queue}/depth` is the
+signal; `node_flow_tasks_ready` and `node_flow_tasks_leased` in the Prometheus
+exposition are the cluster-wide versions.
+
+### "My task never gets picked up"
+
+Work through these in order:
+
+<Steps>
+
+<Step>
+### Is the queue name what you think?
+
+The queue is the task's **`name`**, not its `taskReferenceName`. With a domain
+it is `name:domain`. Check the execution view: the task row shows both.
+</Step>
+
+<Step>
+### Does the worker have the scope?
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/auth/whoami"
+```
+
+`queues:lease:charge` does not cover `charge:eu-west`.
+</Step>
+
+<Step>
+### Is a control holding it back?
+
+A `concurrentExecLimit`, a rate limit or a named semaphore on the task
+definition is enforced **at dequeue**, so the queue will simply hand out fewer
+tasks — or none — however many a worker asks for. See
+[Execution controls](/docs/guide/execution-controls).
+</Step>
+
+<Step>
+### Set a `scheduleToStartTimeout`
+
+This is exactly the failure it exists to name. Declare it on the task definition
+and a starved queue fails visibly instead of hanging:
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/metadata/task-definitions" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"name":"charge","scheduleToStartTimeout":120,"timeoutPolicy":"TIME_OUT_WF"}'
+```
+</Step>
+
+</Steps>
+
+## Testing a workflow without running workers
+
+`nf test` and `@node-flow-dev/testkit` run a definition through the **real
+engine** in memory, with worker tasks mocked. Same decider, same expression
+resolution, same retry semantics, in milliseconds.
+
+```ts title="fulfil_order.spec.ts"
+import { simulate } from '@node-flow-dev/testkit';
+import definition from './fulfil_order.json' with { type: 'json' };
+
+test('refunds the charge when shipping fails', async () => {
+  const result = await simulate(definition, {
+    input: { orderId: 'A-1', amount: 100 },
+    mocks: {
+      charge: { output: { txnId: 'txn_1' } },
+      ship: { status: 'FAILED_WITH_TERMINAL_ERROR', reason: 'no stock' },
+      refund: { output: { refunded: true } },
+    },
+  });
+
+  expect(result.status).toBe('FAILED');
+  expect(result.tasks.map((t) => t.refName)).toContain('refund');
+  expect(result.unmocked).toEqual([]); // nothing silently defaulted
+});
+```
+
+| Option | |
+|---|---|
+| `input`, `variables`, `env` | Starting state. |
+| `mocks` | Per reference name: one outcome for every attempt, or an array, one per attempt (the last repeats). |
+| `taskDefs` | Retry and timeout policy per task definition name. |
+| `subWorkflows` | Child definitions — they then run **for real** rather than being mocked. |
+| `execute` | Run a task for real (an `INLINE` or jq transform); return `undefined` to fall back to the mock. |
+| `maxEvaluations` | A run still going after this many passes is reported as `STUCK`. |
+
+The result carries `status`, `output`, `variables`, every `tasks` row,
+`unmocked` (references that completed with an empty output because nothing
+mocked them), `published` events, `startedWorkflows`, and the `evaluations`
+count.
+
+It applies the **same registration rules** as the server, so a simulation cannot
+pass for a workflow that would be refused — a `javascript` switch or a
+Conductor-style loop condition throws here too.
+
+## Next
+
+- [Execution controls](/docs/guide/execution-controls) — the policy your tasks obey.
+- [System tasks](/docs/guide/system-tasks) — the work you do **not** have to write a worker for.
+- [API](/docs/guide/api) — credentials, scopes and the rest of the surface.

@@ -1,0 +1,476 @@
+---
+title: The engine
+description: The pure decider — why it has no I/O, how the boundary is enforced, the blueprint and static ref analysis, and how each operator is implemented.
+---
+
+Everything that decides what a workflow does next lives in
+`packages/engine/src/lib/decide.ts`, in one synchronous function:
+
+```ts
+decide(blueprint: Blueprint, state: EvaluationState, options?: DecideOptions): DecisionResult
+```
+
+It reads state and returns a list of *commands* describing what should happen.
+It never performs the actions. The caller — `Evaluator` in
+`packages/store/src/lib/evaluator.ts` — applies every command inside one
+transaction.
+
+## Why it is pure, and what that buys
+
+The contract, and every part of it is load-bearing:
+
+- **No I/O.** Everything needed arrives in `state`; everything intended leaves
+  as a command.
+- **Deterministic.** Same inputs, same commands. `now` arrives on the state and
+  `random` is injected through `DecideOptions`, rather than being read from the
+  ambient environment.
+- **Idempotent.** Running twice on the same state produces commands that are
+  safe to apply twice, because scheduling is guarded by
+  `UNIQUE ("workflowId", "refName", "iteration", "attempt")`. This is what lets
+  the engine always prefer a redundant evaluation over a missed one.
+
+Four capabilities fall out of that and out of nothing else:
+
+| Capability | Why purity is the prerequisite |
+|---|---|
+| **A millisecond test suite** | 142 engine tests with no database, no containers and no framework startup. It is worth re-running on every keystroke, which is the only reason operator semantics get the coverage they do. |
+| **`testkit` `simulate()`** | `packages/testkit` runs a definition in memory through the *real* engine, mirroring only what the evaluator does with the commands. A passing simulation means something precisely because the semantics are not re-implemented. |
+| **Deterministic `replay()`** | A recorded run is re-derived from its recorded task outcomes. Against its own version, a divergence is an engine determinism bug; against another version, it previews a change on runs that already happened. |
+| **Time travel** | The execution diagram redrawn as it stood at any instant a task changed. |
+
+<Callout type="warn">
+  PLAN.md names this the first thing that will erode under delivery pressure and
+  the most expensive to restore. The pressure is always the same shape: some
+  decision would be *slightly* easier if the decider could just look something
+  up. It cannot. Compute the answer in the evaluator and pass it in — that is
+  exactly what `exhaustedRetryBudgets` and `env` already do.
+</Callout>
+
+### How the boundary is enforced
+
+Two independent defences, and neither may be waived.
+
+<Mermaid
+  title="Two defences, one boundary"
+  chart={`
+flowchart TB
+  IMP["A stray import in engine/<br/>import something from nestjs/common"]
+  IMP --> L["Defence 1: Nx lint<br/>enforce-module-boundaries<br/>bannedExternalImports on scope:pure"]
+  IMP --> R["Defence 2: module resolution<br/>pnpm nodeLinker: isolated<br/>plus an empty root dependencies block"]
+  L --> F1["A project tagged scope:pure is not<br/>allowed to import nestjs/common"]
+  R --> F2["TS2307: Cannot find module<br/>nestjs/common"]
+`}
+/>
+
+**Defence one** is the `@nx/enforce-module-boundaries` rule in
+`eslint.config.mjs`. `scope:pure` may depend only on `scope:pure`, and
+`bannedExternalImports` names `@nestjs/*`, `sequelize`, `sequelize-typescript`,
+`pg`, `pg-*`, `umzug`, `next`, `react`, `react-*`, `undici`, `ioredis` and
+`kafkajs`. It catches cross-project imports *and* third-party framework imports,
+which is the failure mode that actually happens. It must run on every pull
+request.
+
+**Defence two** is module resolution itself, and it only holds when **both** of
+these are true:
+
+1. pnpm's isolated `nodeLinker` — never `hoisted`, never `shamefully-hoist`.
+   `pnpm-workspace.yaml` says so, with the reason.
+2. Every runtime dependency declared in the package that uses it, **never at
+   the workspace root**.
+
+The second is the subtle one. Module resolution walks *up* the directory tree,
+so anything in the workspace-root `package.json` is reachable from every package
+regardless of package manager. Nx's generators put `@nestjs/*`, `next` and
+`react` at the root, and with those there, `engine` could import
+`@nestjs/common` and it resolved fine under pnpm too. The root now carries dev
+tooling only.
+
+<Callout type="warn">
+  **Keep the root `dependencies` block empty.** Adding a runtime dependency
+  there silently disables this protection for the entire workspace. (It is not
+  empty today — `next`, `react` and `react-dom` are there, left by the
+  generators. That is a live exception to this rule, and the lint rule is
+  carrying the boundary on its own for those three packages.)
+</Callout>
+
+One caveat that was true early and stays worth knowing: `bannedExternalImports`
+only flags packages **installed in the workspace**. A ban on something that is
+not a dependency at all is not enforcement — resolution is what blocks it.
+
+## The blueprint
+
+A definition is compiled once at registration into a blueprint stored alongside
+it, by `packages/engine/src/lib/blueprint.ts`.
+
+<Mermaid
+  title="What compilation produces"
+  chart={`
+flowchart LR
+  D["WorkflowDefinition<br/>nested task tree"] --> F["flattenSequence<br/>build back to front so each<br/>node knows its successor"]
+  F --> N["nodes: Map ref to BlueprintNode<br/>next, staticRefs, location,<br/>forkBranchHeads, forkBranchTips,<br/>joinRef, caseHeads, loopHead, joinOn"]
+  N --> V["validateReferences<br/>duplicate refs, dangling joinOn,<br/>a FORK_JOIN not followed by a JOIN"]
+  V --> C["compileCompensations<br/>each compensateWith becomes<br/>a node outside the flow"]
+  C --> B["Blueprint<br/>entryRef, allStaticRefs,<br/>allTaskDefNames, size, policies"]
+`}
+/>
+
+Compilation does three things the decider would otherwise redo on every
+evaluation, for every running instance:
+
+1. **Flattens** the nested task tree into a node map with resolved successor
+   edges, so "what runs after this?" is a lookup rather than a tree walk.
+2. **Extracts static references** — the set of task refs each node's inputs
+   could read.
+3. **Validates referential integrity** — duplicate reference names, joins
+   pointing at nothing, branches that do not exist, a `SUB_WORKFLOW` with no
+   `subWorkflowParam`. Catching these at registration turns a class of 3am
+   production failures into a rejected HTTP request.
+
+Blueprints are immutable per `(name, version)` and held in an LRU cache. That
+immutability is why cache invalidation never becomes a problem, and it is also
+why compiling a 30,000-task workflow is covered by a **timing test** — accidental
+quadratic behaviour in the compiler would otherwise surface as a registration
+timeout rather than a CI failure.
+
+### Static ref analysis
+
+This is the mechanism that makes large workflows cheap. `extractReferences` in
+`expression.ts` walks arbitrarily nested JSON and collects the leading segment
+of every `${...}` expression, filtering out the reserved scopes (`workflow`,
+`env`, `secrets`, `global`) which need no task row. When the decider schedules a
+task, the evaluator batch-fetches exactly those terminal rows by
+`("workflowId", "refName")` — an indexed point lookup per ref, memoized per
+evaluation.
+
+<Callout type="warn">
+  `allStaticRefs` is **not** just the union of expression references, and the
+  extra sources are the easily-missed half. A `JOIN` decides whether to fire by
+  inspecting its sibling branches, and those refs appear in `joinOn` or as
+  branch tips — never inside a `${...}`. Omit them and the prefetch returns
+  nothing for them, every sibling looks unfinished, and the join silently never
+  fires. Engine unit tests are structurally blind to this, because they supply
+  `resolvedRefs` by hand.
+</Callout>
+
+`compileBlueprint` therefore adds, in addition to every node's `staticRefs`:
+
+- every `joinOn` entry and every `forkBranchTips` entry;
+- every reference in the workflow's `outputParameters` — usually tasks no node
+  input mentions, like `${charge.output.receiptId}` resolved on the last task's
+  completion;
+- both halves of every compensation pair, since an unwind decides what to undo
+  from what finished.
+
+It also records **`allTaskDefNames`**, computed at compile time, because the
+evaluator needs retry and timeout policy for tasks it is *about to* schedule.
+Deriving that list from rows that already exist arms no deadlines on a first
+evaluation, when there are none.
+
+### Branch heads are not branch tips
+
+`forkBranchHeads` is what a `FORK_JOIN` schedules. `forkBranchTips` is what its
+`JOIN` waits on. The distinction is invisible until a branch has more than one
+task — with single-task branches head and tip are the same node, which is why a
+full suite of fork/join tests passed over a decider that fell back to heads and
+therefore fired the join when every branch had **started** rather than
+**finished**.
+
+<Callout type="warn">
+  Any fork test using one task per branch cannot detect this class of bug.
+  Multi-step branches are required.
+</Callout>
+
+## The expression engine
+
+`packages/engine/src/lib/expression.ts` holds two separate jobs, and keeping
+them apart is the point: `extractReferences` is the static pass run once at
+registration, `resolveString` is the runtime pass run per evaluation.
+
+A string that is *exactly* one expression yields the referenced value with its
+type intact, so `${count.output.total}` stays a number. Anything else is
+interpolated into a string. This mirrors Conductor and matters: losing the type
+would break every downstream numeric comparison.
+
+Scopes:
+
+| Spelling | Reads |
+|---|---|
+| `${someRef.output.field}` | A task's output, by reference name |
+| `${someRef.input.field}` | A task's resolved input |
+| `${workflow.input.field}` | The execution's input |
+| `${workflow.variables.x}` and `${global.x}` | Workflow variables, written by `SET_VARIABLE` |
+| `${workflow.env.x}` and `${env.x}` | Namespace environment variables |
+| `${secrets.NAME}` | **Deferred**, see below |
+
+Both spellings of variables and of environment variables are wired, and that is
+not redundancy. `${workflow.variables.x}` is Conductor's spelling and the one
+most users will write; while only `${global.x}` was wired up, `SET_VARIABLE` was
+effectively **write-only** — the value was stored and every read resolved to
+`null`, silently, because `workflow` is a real scope and `variables` was simply a
+key it lacked, so the walk fell off the end of the object rather than raising.
+
+### Two things the engine deliberately refuses to resolve
+
+**Secrets.** `${secrets.x}` survives evaluation **untouched** and is substituted
+exactly once, at dispatch, into the copy handed to an executor or a worker. This
+is not a preference. The decider resolves a task's input and the applier
+persists it, so a secret resolved there would be written to `TaskExecutions` in
+clear, returned by the execution API, rendered in the UI and kept for the
+retention period — a credential leak with a long half-life and no audit trail.
+`resolveOne` returns `expr.raw` verbatim when `scope.secrets` is undefined,
+which is always, for the decider.
+
+**Sealed task output.** A field named in `secretOutputFields` is stored as an
+encrypted envelope, and an expression that lands on one is deferred the same
+way, via `isSealedValue`. The engine holds no key — it is pure — so resolving
+here would write the *envelope* into the next task's input where a plaintext
+value belongs.
+
+<Callout type="warn">
+  The corollary constrains future work: **anything that persists a task's
+  resolved input** — a debugging aid, a replay feature, a richer audit log —
+  must take its copy **before** secrets are substituted. And a sealed field
+  cannot drive a `SWITCH` condition or a loop predicate, because the decider
+  genuinely cannot see it. That is the correct trade: a credential steering
+  control flow would have to be readable by the component that must never read
+  it.
+</Callout>
+
+### JSONPath
+
+`${x.output.items[0].id}` is not plain dots, so `parseExpressions` marks it
+non-simple and it goes through `jsonpath.ts` — a sandbox-free evaluator inside
+the pure engine supporting `[n]`, `[-1]`, `['quoted.key']`, `[*]`, `..`, unions,
+slices, `[?(@.field op literal)]` filters and `.length()`. Definite paths yield
+values; selecting paths yield arrays. It is written rather than imported because
+importing a JSONPath library into `scope:pure` would mean auditing that library
+for I/O and for the sandbox escape surface a script-capable one carries.
+
+## The command model
+
+`packages/engine/src/lib/commands.ts` is the whole vocabulary. Nothing else can
+leave the decider.
+
+| Command | Effect the applier performs |
+|---|---|
+| `ScheduleTask` | Insert a `TaskExecutions` row, and unless it is an operator or a waiting task, enqueue it |
+| `CompleteTask` / `FailTask` | Move an existing task to a terminal state |
+| `RetryTask` | Insert the next attempt, after a computed backoff, on the same queue |
+| `SkipTask` | Record an untaken branch as `SKIPPED` |
+| `SetVariable` | Merge into `WorkflowExecutions.variables` |
+| `PublishEvent` | Write an outbox row — `EVENT` and `KAFKA_PUBLISH` |
+| `CompleteWorkflow` / `FailWorkflow` | Set the execution's terminal status |
+| `StartSubWorkflow` / `StartWorkflow` | Write an outbox row that the relay turns into a child run |
+| `SetTimer` | Insert a `Timers` row for a deadline or a `WAIT` |
+
+Three details on `ScheduleTask` matter more than the rest:
+
+- **`domain`** is carried on the command rather than re-derived at apply time,
+  because the decider is the only thing that has read the definition. When it was
+  not carried, the applier had nothing to route on and every task silently went
+  to the shared queue — while the API went on accepting the routing request.
+- **`resolved`** tells the applier to insert the row already terminal. This is
+  in-pass operator resolution, below.
+- **`continuedInPass`** says the pass already advanced past this resolved task
+  to its successors, so it is recorded as seen by the decider. Without it a
+  later pass reacts to the same completion again and repeats what follows —
+  which showed up in production as an `EVENT` published twice.
+
+## In-pass operator resolution
+
+Operators that need no external work are settled inside the evaluation that
+reaches them, and the pass continues straight through. Without it, a `SWITCH`
+nested in a `FORK` inside a `DO_WHILE` would cost three evaluations and three
+database round trips to traverse control flow that does nothing.
+
+<Mermaid
+  title="One pass walking through three operators"
+  chart={`
+flowchart LR
+  A["task completes"] --> B["scheduleNode DO_WHILE"]
+  B --> C["resolveImmediateOperator<br/>returns COMPLETED"]
+  C --> D["continueThrough<br/>depth plus one"]
+  D --> E["scheduleNode FORK_JOIN"]
+  E --> F["resolveImmediateOperator"]
+  F --> G["continueThrough"]
+  G --> H["scheduleNode SWITCH"]
+  H --> I["resolveImmediateOperator<br/>caseValue chosen"]
+  I --> J["scheduleNode the taken branch<br/>a SIMPLE task — queued, pass ends"]
+`}
+/>
+
+Task rows are still written for every operator, because seeing *why* a workflow
+took a branch is most of debugging one.
+
+Chaining is bounded by `MAX_RESOLUTION_DEPTH` (64), so a cyclic definition
+surfaces as a stuck workflow the sweeper shouts about rather than a decider
+spinning forever while holding a row lock. At the limit, `continuedInPass` is
+`false`, because the next pass must continue from there.
+
+`isImmediateOperator` in `packages/core/src/lib/task-type.ts` is the list, and
+the exclusions are as deliberate as the inclusions: `JOIN`/`EXCLUSIVE_JOIN` wait
+on sibling branches, `DO_WHILE` spans iterations, `SUB_WORKFLOW` waits on a
+child execution, `YIELD` waits for an external signal.
+
+## Operator by operator
+
+| Operator | How it is implemented | The thing that was wrong once |
+|---|---|---|
+| `SWITCH` | `resolveSwitch` evaluates the case value, schedules the taken branch and emits `SkipTask` for every other case *and* the default | Conductor's `value-param` form — `expression: "switchCaseValue"` naming an input parameter — was resolved as a literal string, so every run silently took the default branch |
+| `FORK_JOIN` | Resolves in-pass with `forkedBranches` as output, then schedules every branch head | — |
+| `FORK_JOIN_DYNAMIC` | Resolves in-pass, reads the branch list from a runtime input, materialises tasks with no blueprint node, and records their refs as `forkedTaskRefs` in its own output | It **never ran at all**. Operators are never queued and the decider only advances terminal tasks, so a fork that did not settle in the pass that scheduled it sat `SCHEDULED` forever with zero branches |
+| `JOIN` | Scheduled only once `maybeSatisfyJoin` confirms every dependency is settled; resolves in-pass to a map of branch ref to output | It fired on branch *heads* rather than *tips* — satisfied when every branch had started |
+| `EXCLUSIVE_JOIN` | Fires on the first genuinely **completed** branch and outputs that branch's output directly, not a map | It emitted a branch map like a plain `JOIN`, making `${join.output.field}` unreadable without already knowing which branch won — and fired off a *skipped* branch while the taken one was still running |
+| `DO_WHILE` | `advanceLoop` evaluates the condition when the body's last task finishes; on exit it **completes** the open `DO_WHILE` row rather than scheduling a new one | Re-scheduling collided with the row open since the loop began, `ON CONFLICT DO NOTHING` absorbed it, the frontier never emptied, and the workflow ran forever |
+| `DYNAMIC` | `resolveTaskDefName` reads the task name from an input parameter at schedule time | — |
+| `SUB_WORKFLOW` | Emits `StartSubWorkflow`; the task stays `IN_PROGRESS` until the child is terminal and the applier reports the outcome back | A retried sub-workflow hung its parent forever, by three independent causes at once — and `retryCount` defaults to 3, so this was the ordinary path |
+| `START_WORKFLOW` | Fire and forget: resolves in-pass, emits `StartWorkflow` with an idempotency key derived from the task identity | The command carried `correlationId` and the outbox payload dropped it |
+| `TERMINATE` | Ends the workflow with a chosen status and optional output | — |
+| `SET_VARIABLE` | Emits `SetVariable` **and** mutates `ctx.scope.variables` immediately | The pass continues straight through an operator, so without the second half the next task's input resolved against the untouched scope and read `null` from the very variable it was written to feed |
+| `GET_WORKFLOW` | Resolves in-pass to the execution's own identity and status | — |
+| `EVENT` / `KAFKA_PUBLISH` | Resolve in-pass and emit `PublishEvent`, so the outbox row and the task completion commit together | Publishing from a task runner would put it outside that transaction; a lease expiring between publishing and reporting retries the task and publishes twice |
+| `YIELD` | Inserted `IN_PROGRESS` and completed only by a signal | Recording it as `SCHEDULED` said something would pick it up, and nothing will |
+| `NOOP` | Resolves in-pass to an empty output | — |
+
+### Dynamically forked tasks have no blueprint node
+
+That has two consequences the decider handles explicitly, in
+`handleDynamicChild`:
+
+- Their refs live only in the fork's own output as `forkedTaskRefs`, because
+  that is the only place the downstream `JOIN` can discover what to wait for.
+- When one reaches a terminal state there is **no node to look up**, so a
+  separate path handles it. Without that, a completing dynamic branch is
+  silently dropped and its `JOIN` waits forever. A failing one also has no
+  `optional` flag to consult, so it always fails the workflow.
+
+### Loops load only the current iteration
+
+`iteration` is part of task identity, so a loop that has run 10,000 times costs
+exactly as much to evaluate as one that has run once. Two subtleties in
+`scheduleNode` come from that:
+
+- A finished row under the bare ref only counts as "this task" if its iteration
+  is **greater than or equal to** the one being scheduled. Treating any earlier
+  iteration as a duplicate stopped every loop whose body reads its own tasks —
+  a `FORK_JOIN` joined by name — from ever starting its second pass.
+- `lookupTaskAt` resolves joins at a specific iteration. The latest finished row
+  for a ref can belong to the previous pass while this pass's copy is still
+  running, and accepting it fired the join a pass early.
+
+`${loop.output.iteration}` is the number of iterations **completed**, not the
+one about to start, so `iteration < 3` runs the body three times. `scopeInsideLoop`
+synthesises that value for the body, because the `DO_WHILE` task itself stays
+open until the loop exits and therefore has no output yet.
+
+## Failure semantics
+
+`handleTerminalTask` is the whole of it.
+
+<Mermaid
+  title="What happens when a task ends badly"
+  chart={`
+flowchart TB
+  T["task FAILED or TIMED_OUT"] --> TP{"timeoutPolicy?"}
+  TP -->|"ALERT_ONLY on a timeout"| ADV["advance — keep the result,<br/>the workflow proceeds"]
+  TP -->|"TIME_OUT_WF on a timeout"| NORETRY["no retry — the deadline<br/>is the workflow's deadline"]
+  TP -->|"RETRY, or an ordinary failure"| RC{"attempt plus one<br/>within retryCount?"}
+  RC -->|"no"| OPT
+  RC -->|"yes"| NRE{"isRetryable?"}
+  NRE -->|"nonRetryableErrors matched"| OPT
+  NRE -->|"retry budget exhausted"| OPT
+  NRE -->|"yes"| RT["RetryTask with backoff,<br/>jitter and a cap"]
+  NORETRY --> OPT
+  OPT{"task.optional?"}
+  OPT -->|"yes"| ADV
+  OPT -->|"no"| FW["FailWorkflow"]
+`}
+/>
+
+Points where this has been wrong, and is now pinned by tests:
+
+- **`ALERT_ONLY` behaved as `TIME_OUT_WF`** while `timeoutPolicy` was ignored,
+  turning a monitoring signal into an outage.
+- **`TIME_OUT_WF` retried.** A task with a five-minute budget and three retries
+  held its workflow for twenty minutes while every attempt reported the same
+  timeout. Only `RETRY` spends retries on a timeout. Existing tests had all used
+  `retryCount: 0`, which is exactly why none noticed.
+- **Retry jitter could exceed `maxRetryDelaySeconds`**, because the cap was
+  applied *before* jitter. It is clamped on both sides now.
+- **`retryBudget` is computed by the caller.** It needs a query over recent
+  attempts per task definition, so the evaluator computes the verdict and
+  `isRetryable` honours it — the decider stays pure. The budget ignores samples
+  below 20 executions, because a budget that trips on the first couple of retries
+  makes any new task definition unusable before it has meaningful traffic.
+
+### An unresolvable expression fails one workflow, not the decider
+
+`decide()` wraps `decideUnguarded` and catches `ExpressionError`. Thrown out of
+the decider, it was a poison pill: the runner failed, retried the same workflow
+forever, and the execution sat at `RUNNING` with no tasks and the reason only in
+a server log. It now fails **that** workflow with the reason recorded, and
+`retry` recovers it once the definition is fixed.
+
+The same shape recurs in the evaluator and is worth internalising as a rule:
+
+<Callout type="warn">
+  **Never throw out of an evaluation for a condition that will recur on the next
+  pass.** A bad input, a missing group, a form template that does not exist, a
+  routing that cannot be honoured — throwing rolls the pass back, the decider
+  re-derives the same state on the next wakeup, and the workflow spins forever.
+  Fail the **task**, with the reason on the row, and let the existing retry and
+  timeout machinery handle it.
+</Callout>
+
+## Saga compensation
+
+A task declares `compensateWith` — a task, or a task-definition name that
+receives the original's input and output. `compileCompensations` turns each into
+a node *outside* the flow: nothing schedules it, it schedules nothing, and its
+`location.branchKey` is `'compensation'` so the decider can tell an unwind from
+ordinary work.
+
+When a run fails (`FAILED` or `TIMED_OUT`, never an intentional `TERMINATED`),
+`beginCompensation` discards whatever the pass meant to start next, writes the
+visible `__compensation` variable holding the original status and reason, and
+starts the first undo. `continueCompensation` then runs them **one at a time,
+most recently finished first** — a later step may depend on an earlier one, the
+shipment on the charge, so it is undone before what it built on.
+
+A failed compensation gets its own retries; once spent, the run fails with both
+reasons, because an unwind that stopped halfway is exactly what someone has to
+go and finish by hand.
+
+One bug worth knowing about: compensable steps that resolved **in the same pass
+as the failure** were never compensated, because the unwind looked only at tasks
+loaded from the database and those steps did not exist there yet.
+`ctx.resolvedThisPass` is what makes them visible, and `latestTask` consults it
+first.
+
+## Rules enforced at registration, not in the compiler
+
+`loopConditionProblem` and `switchExpressionProblem` are exported from
+`decide.ts` and called by the registration path, **not** by `compileBlueprint`.
+The placement is the interesting decision.
+
+Stored definitions are recompiled whenever a process loads them. A stricter
+compiler would therefore make workflows registered *before* the rule fail to
+load — and take their running executions down with them. A mutation that moved
+the loop rule into the compiler failed the test that loads such a legacy
+definition.
+
+Both rules reject only what is *certainly* wrong, and both catch mistakes whose
+symptom is silence:
+
+- A loop condition with **no comparison at all**, or an operand written in
+  another syntax — `$.loop['iteration'] < 3`, which is how Conductor's
+  JavaScript conditions look and therefore what people migrating will paste. It
+  is compared as literal text, which is never less than 3, so the loop runs
+  exactly once. A bare word like `PAID` is deliberately *not* rejected, because
+  `${charge.output.status} == PAID` works as written.
+- A `SWITCH` with a `javascript` evaluator, which the pure engine does not run,
+  or a `value-param` expression naming no input parameter — every run takes the
+  default case.
+
+At runtime an unevaluable loop condition still exits the loop, which stays the
+safety net; these rules stop new ones being saved.

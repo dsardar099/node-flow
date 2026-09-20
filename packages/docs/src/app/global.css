@@ -1,0 +1,55 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+:root {
+  scroll-behavior: smooth;
+  --color-fd-background: #111113;
+  --color-fd-foreground: #f4f4f5;
+  --color-fd-card: #17171a;
+  --color-fd-card-foreground: #f4f4f5;
+  --color-fd-popover: #1b1b1f;
+  --color-fd-popover-foreground: #f4f4f5;
+  --color-fd-muted: #1b1b1f;
+  --color-fd-muted-foreground: #a1a1aa;
+  --color-fd-border: rgba(255, 255, 255, .1);
+  --color-fd-primary: #55c7ff;
+  --color-fd-primary-foreground: #081018;
+  --color-fd-secondary: #202024;
+  --color-fd-secondary-foreground: #e4e4e7;
+  --color-fd-accent: rgba(85, 199, 255, .09);
+  --color-fd-accent-foreground: #f4f4f5;
+  --color-fd-ring: #55c7ff;
+}
+* { box-sizing: border-box; }
+body { background: #111113; }
+::selection { color: #fff; background: rgba(70, 115, 255, .55); }
+
+/* The reading experience uses the same restrained, high-contrast system as
+   the landing page: neutral surfaces, compact radii, and brand-only colour. */
+[data-sidebar-panel] { background: #111113 !important; }
+/* Keep navigation compact instead of adding the centred layout's spare
+   width to the sidebar. Retain Fumadocs' collapse and TOC width variables;
+   the article still has its own 900px reading-width limit. */
+@media (min-width: 768px) {
+  #nd-docs-layout {
+    --fd-sidebar-width: 248px;
+    /* Override the library's inline grid columns, not its named grid areas. */
+    grid-template-columns: 0px var(--fd-sidebar-col) minmax(0, 1fr) var(--fd-toc-width) 0px !important;
+  }
+  [class*="grid-area:sidebar"] > aside > * { width: 100% !important; }
+  [class*="grid-area:sidebar"] > aside { background: #141416; }
+  [class*="grid-area:sidebar"] a,
+  [class*="grid-area:sidebar"] button { border-radius: 5px; }
+}
+.prose { --tw-prose-body: #c7c7ce; --tw-prose-headings: #f4f4f5; }
+.prose :where(h2, h3) { scroll-margin-top: 6rem; letter-spacing: -.025em; }
+.prose :where(p, li) { line-height: 1.75; }
+.prose :where(a):not(:where([class~="not-prose"] *)) { text-decoration-color: rgba(85, 199, 255, .45); text-underline-offset: 3px; }
+.prose :where(blockquote):not(:where([class~="not-prose"] *)) { border-left-color: #55c7ff; background: rgba(85, 199, 255, .055); padding: .8rem 1rem; }
+.prose :where(table):not(:where([class~="not-prose"] *)) { font-size: .9rem; }
+.prose :where(thead):not(:where([class~="not-prose"] *)) { background: rgba(255, 255, 255, .035); }
+.prose :where(code):not(:where(pre *, [class~="not-prose"] *)) { border: 1px solid rgba(255, 255, 255, .08); border-radius: 4px; background: #1b1b1f; padding: .15em .38em; }
+/* GitHub's original comment token is below WCAG AA on our charcoal code
+   surface. Preserve its subdued role while lifting it to readable contrast. */
+[style*="--shiki-dark:#6A737D"] { --shiki-dark: #9299a4 !important; }

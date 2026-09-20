@@ -1,0 +1,657 @@
+---
+title: The nf CLI
+description: Every command, with examples — registering definitions, running and tailing executions, replay, bundles, and offline tests.
+---
+
+```bash
+git clone https://github.com/dsardar099/node-flow.git
+cd node-flow && pnpm install
+pnpm nf help
+```
+
+<Callout>
+  **`nf` is not on npm in 1.0.** It reaches deeper into the engine than the
+  published packages do — `migrate` and `bootstrap` talk to Postgres directly —
+  so its surface is not yet one worth committing to as a public API. Run it from
+  a clone, or from the container:
+
+  ```bash
+  docker run --rm -e NF_URL -e NF_API_KEY \
+    ghcr.io/dsardar099/node-flow/server:1.0.0 nf workflows list
+  ```
+</Callout>
+
+## How it connects
+
+Most commands talk to a **running server**. Three — `bootstrap`, `create-user`
+and `migrate` — talk to **Postgres directly**, because they cannot be done
+through the API: `bootstrap` breaks the credential chicken-and-egg, and
+`migrate` runs schema changes as a deliberate step rather than racing them
+across every replica. `nf test` talks to nothing at all.
+
+| Flag | Environment | Default |
+|---|---|---|
+| `--url` | `NF_URL` | `http://localhost:3000` |
+| `--api-key` | `NF_API_KEY` | none — the command fails naming it |
+| `--namespace` | `NF_NAMESPACE` | `default` |
+| `--database-url` | `DATABASE_URL` | none |
+
+Flags win over the environment.
+
+```bash
+export NF_URL=https://flows.example.com
+export NF_API_KEY=nf_...
+export NF_NAMESPACE=default
+```
+
+Both `--key value` and `--key=value` work. Every command takes `--json` for
+scripts; without it the output is for people.
+
+<Callout type="info">
+  Errors are one line, no stack trace. A stack trace for "you forgot
+  `--namespace`" buries the one sentence that matters.
+</Callout>
+
+---
+
+## Setup commands
+
+These connect to Postgres, not to the API.
+
+### `nf migrate`
+
+```bash
+DATABASE_URL=postgres://nodeflow:pw@localhost:5433/nodeflow nf migrate
+```
+
+```
+Applied migrations:
+  0036-ai
+  0037-trace-context
+```
+
+```bash
+nf migrate --json
+# { "applied": ["0036-ai", "0037-trace-context"] }
+```
+
+Already up to date prints `Schema already up to date` and applies nothing.
+Each migration runs in one transaction, so it is safe under a race — but running
+it as a job and disabling `DATABASE_MIGRATE_ON_BOOT` is the right shape for a
+multi-replica rollout. See
+[Self-hosting](/docs/guide/self-hosting#running-migrations).
+
+### `nf bootstrap`
+
+Creates a namespace and an **API key** with `admin` and `platform:admin`.
+
+<Callout type="info">
+  Since the server seeds its own first namespace and administrator on a fresh
+  database, this is no longer part of the normal install. It is still the right
+  tool for scripting a new tenant, for recovering an install whose credentials
+  were lost, and for CI that needs a key without a browser.
+</Callout>
+
+```bash
+nf bootstrap --namespace default
+```
+
+```
+Created namespace "default" (0193c0f1-…)
+Applied migrations: 0001-core-schema, …
+
+API key:
+  nf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+This is shown once and cannot be recovered. Store it now.
+
+Try it:
+  curl -H "X-API-Key: nf_xxxx…" http://localhost:3000/v1/auth/whoami
+```
+
+| Flag | Meaning |
+|---|---|
+| `--namespace <slug>` | **Required.** Created if absent, reused if present. |
+| `--key-name <name>` | Name for the credential in the audit trail. Default `bootstrap`. |
+| `--scopes <a,b,c>` | Default `admin,platform:admin`. Validated — a scope nobody can hold is refused. |
+| `--no-migrate` | Skip migrations. |
+| `--json` | Machine-readable. |
+
+```bash
+# A narrowly-scoped key for a CI pipeline
+nf bootstrap --namespace acme --key-name ci --scopes executions:read,executions:start --json
+```
+
+```json
+{
+  "namespaceId": "0193c0f1-…",
+  "namespaceCreated": true,
+  "migrationsApplied": [],
+  "apiKeyId": "0193c0f2-…",
+  "token": "nf_…"
+}
+```
+
+`platform:admin` is included by default because creating the **second**
+namespace needs a scope that `admin` deliberately does not satisfy. Without it
+the namespace API would be unreachable on a fresh install and the only way to
+add a tenant would be SQL.
+
+### `nf create-user`
+
+A human account for the dashboard and the human-task inbox.
+
+```bash
+nf create-user --namespace default \
+  --email ada@example.com --name Ada \
+  --password 'a-password-that-meets-the-policy'
+```
+
+| Flag | Meaning |
+|---|---|
+| `--namespace <slug>` | **Required.** Must already exist. |
+| `--email <email>` | **Required.** |
+| `--password <pw>` | **Required.** Must satisfy the password policy. |
+| `--name <name>` | Display name. Defaults to the email. |
+| `--scopes <a,b,c>` | Default `admin`. |
+| `--json` | |
+
+An API key cannot reach the human-task inbox by design — claiming and completing
+are statements about who did the work — so exercising human tasks needs a real
+user.
+
+---
+
+## Definitions
+
+### `nf workflows list`
+
+The latest version of every registered workflow.
+
+```bash
+nf workflows list
+```
+
+```
+NAME             VERSION  TAGS           DESCRIPTION
+checkout         v3       team:payments  Charge, then ship.
+fulfil_order     v1       -
+rag_answer       v2       ai:enabled     Answers from the handbook.
+```
+
+```bash
+nf workflows list --json | jq '.[] | select(.tags | index("team:payments"))'
+```
+
+### `nf workflows get`
+
+```bash
+nf workflows get checkout
+nf workflows get checkout --version 2
+```
+
+JSON on stdout, so it pipes:
+
+```bash
+nf workflows get checkout > checkout.json
+nf workflows get checkout | jq '.tasks[].taskReferenceName'
+```
+
+### `nf workflows register`
+
+```bash
+nf workflows register checkout.json
+nf workflows register ./workflows/          # every *.json in the directory, sorted
+nf workflows register a.json b.json c.json
+```
+
+```
+registered checkout v3  (checkout.json)
+registered refund v1    (refund.json)
+```
+
+Each file is registered independently; a failure is reported against **that
+file** and the rest continue. The exit code is 1 if any failed, which is what
+makes it usable in CI.
+
+```bash
+nf workflows register ./workflows/ --json
+# { "file": "workflows/checkout.json", "name": "checkout", "version": 3 }
+```
+
+<Callout type="info">
+  Registering the same `name` and `version` twice is a conflict — versions are
+  immutable. Bump `version` in the file, or use
+  `nf import --workflow-conflicts new-version`.
+</Callout>
+
+---
+
+## Running
+
+### `nf run`
+
+```bash
+# Fire and forget — prints the id
+nf run checkout --input '{"orderId":"A-1","amount":99}'
+# started checkout: 0193c0f1-…
+
+# Input from a file
+nf run checkout --input @order.json
+
+# Wait for the result
+nf run checkout --input '{"orderId":"A-1"}' --wait 60
+```
+
+```
+0193c0f1-…  COMPLETED
+{
+  "receipt": "txn_abc"
+}
+```
+
+| Flag | Meaning |
+|---|---|
+| `--input JSON` or `--input @file` | Must be a JSON **object**. |
+| `--wait [SECONDS]` | Block for the result. Bare `--wait` is 30 s; the server caps it at 60. |
+| `--version N` | Pin a definition version. |
+| `--correlation-id ID` | Your identifier, for finding the run later. |
+| `--json` | |
+
+**Exit codes**, so a script can branch:
+
+| Code | Meaning |
+|---|---|
+| `0` | `COMPLETED` |
+| `1` | Reached a terminal status that is not `COMPLETED` |
+| `2` | Still running when the wait elapsed |
+
+```bash
+if nf run nightly_reconcile --wait 60; then
+  echo "reconciled"
+else
+  case $? in
+    1) echo "failed — check the run" ;;
+    2) echo "still running, not waiting" ;;
+  esac
+fi
+```
+
+<Callout type="warn">
+  `--wait` uses `POST /executions/{name}/execute`, which is bounded at 60
+  seconds server-side. The execution **continues** past the timeout — a caller
+  that stopped waiting has not cancelled anything.
+</Callout>
+
+### `nf executions list`
+
+```bash
+nf executions list
+nf executions list --workflow checkout --status FAILED --limit 50
+```
+
+```
+ID                                    WORKFLOW      STATUS     STARTED
+0193c0f1-…                            checkout v3   FAILED     2026-09-19T14:22:03.112Z
+0193c0e8-…                            checkout v3   COMPLETED  2026-09-19T14:19:44.001Z
+```
+
+| Flag | Meaning |
+|---|---|
+| `--workflow W` | Definition name. |
+| `--status S` | `RUNNING`, `PAUSED`, `COMPLETED`, `FAILED`, `TIMED_OUT`, `TERMINATED`. |
+| `--limit N` | Default 20, max 200. |
+| `--json` | |
+
+These map onto the search query language: `--workflow` and `--status` become
+`workflow:X status:Y`. The API supports considerably more — see
+[API → searching executions](/docs/guide/api#searching-executions).
+
+### `nf executions get`
+
+```bash
+nf executions get 0193c0f1-…
+```
+
+```
+checkout  FAILED
+reason: task "ship" ended as FAILED after 4 attempt(s)
+TASK       TYPE     STATUS     ATTEMPT
+charge     SIMPLE   COMPLETED  1
+ship       SIMPLE   FAILED     4
+```
+
+`ATTEMPT` is 1-based for reading; the API's `attempt` is 0-based. A task inside
+a loop is shown as `ref#iteration`.
+
+```bash
+nf executions get 0193c0f1-… --json | jq '.tasks[] | select(.status=="FAILED")'
+```
+
+### `nf executions cancel-task`
+
+Stops a running task and pauses the run around it.
+
+```bash
+nf executions cancel-task 0193c0f1-… transcribe
+```
+
+```
+cancelled transcribe; workflow is PAUSED
+the worker was not stopped — its result will be refused when it reports
+```
+
+The task is marked `CANCELED`, not failed: no retry is spent and no failure
+workflow runs. The second line is not a footnote — the process doing the work
+keeps going, and only its *result* is refused.
+
+### `nf executions rerun-tasks`
+
+Runs named tasks again. Takes one or more references.
+
+```bash
+nf executions rerun-tasks 0193c0f1-… transcribe
+```
+
+```
+re-running transcribe
+
+stale — still holding output from the run being replaced:
+  transcreate, speech_generate
+re-run with --cascade to replace these too
+```
+
+`--cascade` re-runs everything that depended on those tasks as well, so nothing
+is left stale:
+
+```bash
+nf executions rerun-tasks 0193c0f1-… transcribe --cascade
+```
+
+The workflow must be **paused or finished**. On a running one you get a `409`
+telling you to pause first — re-running a task while its downstream is still
+executing races the decider and has no agreed meaning.
+
+```bash
+nf executions rerun-tasks 0193c0f1-… transcribe --json | jq .staleDownstream
+```
+
+### `nf tail`
+
+Follows a run, printing each task change as it happens, until it ends.
+
+```bash
+nf tail 0193c0f1-…
+```
+
+```
+14:22:03  charge                   SCHEDULED
+14:22:03  charge                   IN_PROGRESS
+14:22:04  charge                   COMPLETED
+14:22:04  ship                     SCHEDULED
+14:22:06  ship                     FAILED (attempt 1) — connection refused
+14:22:08  ship                     SCHEDULED (attempt 2)
+── workflow RUNNING
+```
+
+| Flag | Meaning |
+|---|---|
+| `--interval MS` | Poll interval. Default 1000. |
+| `--json` | One JSON object per line — `{ at, task, attempt, status, reason? }`. |
+
+Exits `0` if the run completed, `1` otherwise.
+
+```bash
+# Start and follow in one line
+ID=$(nf run checkout --input '{"orderId":"A-1"}' --json | jq -r .workflowId)
+nf tail "$ID"
+```
+
+For a live UI-grade stream, the server also exposes server-sent events at
+`GET /v1/ns/{ns}/executions/{id}/stream`.
+
+### `nf replay`
+
+Re-derives a recorded run through the engine and reports whether a definition
+version still reproduces it. Nothing is executed and no worker is touched.
+
+```bash
+nf replay 0193c0f1-…
+# v3 reproduces the run exactly
+
+nf replay 0193c0f1-… --version 4
+# 2 difference(s) against v4:
+#   - task "ship" was scheduled with a different input
+#   - workflow output key "receipt" resolved to null
+```
+
+Exits `0` when it matches, `1` when it diverges — so a "does v4 break anything
+that ran on v3?" check belongs in CI.
+
+---
+
+## Bundles
+
+### `nf export`
+
+```bash
+nf export --out bundle.json                       # everything
+nf export --workflows checkout,refund --out b.json
+nf export | jq .                                  # to stdout
+```
+
+A bundle carries workflow **and** task definitions.
+
+### `nf import`
+
+```bash
+nf import bundle.json --dry-run
+nf import bundle.json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--dry-run` | Report what it would do; change nothing. |
+| `--workflow-conflicts skip\|new-version` | What to do when a name and version already exist. |
+| `--task-conflicts skip\|overwrite` | Likewise for task definitions. |
+
+```bash
+# Promote from staging to production
+NF_URL=https://staging.example.com NF_API_KEY=$STAGING nf export --workflows checkout --out checkout.json
+NF_URL=https://prod.example.com    NF_API_KEY=$PROD    nf import checkout.json --dry-run
+NF_URL=https://prod.example.com    NF_API_KEY=$PROD    nf import checkout.json --workflow-conflicts new-version
+```
+
+---
+
+## `nf test`
+
+Runs definitions through the **real engine** with **no server**: same decider,
+same expression resolution, same retry semantics, same registration rules — with
+anything external mocked. Milliseconds, and it drops straight into CI.
+
+```bash
+nf test greet.test.json
+nf test ./tests/                      # every *.json in the directory
+nf test a.json b.json
+```
+
+```
+✓ tests/happy-path.json   COMPLETED  7 ms
+✗ tests/saga.json         FAILED     11 ms
+    task cancel_hotel is never run, expected COMPLETED
+
+1 passed, 1 failed
+```
+
+Exit code 1 if any expectation failed.
+
+### The test file
+
+```json title="saga.test.json"
+{
+  "definition": {
+    "name": "book_trip",
+    "version": 1,
+    "inputParameters": ["city"],
+    "tasks": [
+      {
+        "name": "book_hotel",
+        "taskReferenceName": "book_hotel",
+        "type": "SIMPLE",
+        "inputParameters": { "city": "${workflow.input.city}" },
+        "compensateWith": {
+          "name": "cancel_hotel",
+          "taskReferenceName": "cancel_hotel",
+          "type": "SIMPLE",
+          "inputParameters": { "bookingId": "${book_hotel.output.bookingId}" }
+        }
+      },
+      {
+        "name": "book_flight",
+        "taskReferenceName": "book_flight",
+        "type": "SIMPLE",
+        "inputParameters": { "city": "${workflow.input.city}" }
+      }
+    ]
+  },
+
+  "input": { "city": "lisbon" },
+
+  "taskDefs": {
+    "book_flight": { "retryCount": 0 }
+  },
+
+  "mocks": {
+    "book_hotel": { "output": { "bookingId": "b-1" } },
+    "book_flight": { "status": "FAILED_WITH_TERMINAL_ERROR", "reason": "no seats" },
+    "cancel_hotel": { "output": { "cancelled": true } }
+  },
+
+  "expect": {
+    "status": "FAILED",
+    "tasks": { "cancel_hotel": "COMPLETED" }
+  }
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `definition` | The workflow, inline. |
+| `input`, `variables`, `env` | Starting state. |
+| `mocks` | Per **task reference name**: one outcome for every attempt, or an array — one per attempt, the last repeating. |
+| `taskDefs` | Retry and timeout policy, by task definition **name**. An entry that does not say otherwise gets `retryCount: 0`, so a test does not silently take four attempts. A task with **no** entry falls back to the schema defaults, including `retryCount: 3`. |
+| `subWorkflows` | Child definitions by name. They then run **for real** rather than being mocked. |
+| `expect.status` | `COMPLETED`, `FAILED`, `TIMED_OUT`, `TERMINATED`, or `STUCK`. |
+| `expect.output` | Key by key, compared as JSON. |
+| `expect.tasks` | Reference name to expected final status. |
+
+A mock outcome is `{ "output": {...} }` (implicitly `COMPLETED`) or
+`{ "status": "FAILED" \| "FAILED_WITH_TERMINAL_ERROR" \| "TIMED_OUT", "reason": "...", "output": {...} }`.
+
+### Building a case from parts
+
+```bash
+nf test --definition checkout.json \
+        --input '{"orderId":"A-1"}' \
+        --mocks '{"charge":{"output":{"txnId":"t1"}}}'
+```
+
+### Unmocked tasks
+
+A task with no mock **completes with an empty output** and is listed in
+`unmocked`. The human-readable output says so:
+
+```
+✓ tests/partial.json  COMPLETED  4 ms
+    note: completed with empty output because nothing mocked ship, notify
+```
+
+Assert on it in code with `@node-flow-dev/testkit`:
+
+```ts
+const result = await simulate(definition, { input, mocks });
+expect(result.unmocked).toEqual([]);
+```
+
+### `--json` output
+
+```bash
+nf test ./tests/ --json
+```
+
+```json
+{"file":"tests/saga.json","passed":false,"status":"FAILED","output":{},"problems":["task cancel_hotel is never run, expected COMPLETED"],"unmocked":[]}
+```
+
+One object per line, so it streams into a reporter.
+
+<Callout type="info">
+  `nf test` applies the **same registration rules** the server does. A
+  `javascript` SWITCH evaluator, a `value-param` naming no input parameter, or a
+  Conductor-style `$.loop['iteration'] < 3` loop condition all throw here —
+  because a simulation that accepted what the server refuses would pass tests for
+  a workflow that can never be deployed.
+</Callout>
+
+---
+
+## In CI
+
+```yaml title=".github/workflows/workflows.yml"
+name: workflows
+on: [pull_request]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+
+      # No server, no database, no containers.
+      - run: npx --yes @node-flow-dev/cli@1.0.0 test ./workflows/tests/
+
+  deploy:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      NF_URL: ${{ secrets.NF_URL }}
+      NF_API_KEY: ${{ secrets.NF_API_KEY }}
+      NF_NAMESPACE: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - run: npx --yes @node-flow-dev/cli@1.0.0 workflows register ./workflows/
+```
+
+---
+
+## Command summary
+
+| Command | Talks to | Purpose |
+|---|---|---|
+| `nf bootstrap --namespace <slug>` | Postgres | Create a namespace and an admin API key. |
+| `nf create-user --namespace <slug> --email … --password …` | Postgres | Create a human account. |
+| `nf migrate` | Postgres | Apply pending migrations. |
+| `nf workflows list` | API | Latest version of every workflow. |
+| `nf workflows get <name> [--version N]` | API | A definition, as JSON. |
+| `nf workflows register <file\|dir>…` | API | Register definitions. |
+| `nf run <workflow> [--input …] [--wait S]` | API | Start a run, optionally waiting. |
+| `nf executions list [--workflow W] [--status S] [--limit N]` | API | Search runs. |
+| `nf executions get <id>` | API | One run and its tasks. |
+| `nf tail <id> [--interval MS]` | API | Follow a run until it ends. |
+| `nf replay <id> [--version N]` | API | Replay against a definition version. |
+| `nf export [--workflows a,b] [--out f]` | API | Export a bundle. |
+| `nf import <bundle.json> [--dry-run]` | API | Import a bundle. |
+| `nf test <file\|dir>…` | nothing | Run workflows offline. |
+| `nf help` | — | |
+
+## Next
+
+- [API](/docs/guide/api) — everything the CLI does not cover.
+- [Workflows](/docs/guide/workflows) — what to put in those JSON files.
+- [Self-hosting](/docs/guide/self-hosting) — `nf migrate` in a rollout.

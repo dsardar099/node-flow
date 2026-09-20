@@ -1,0 +1,241 @@
+---
+title: Releasing
+description: How a release happens — a tag triggers verify, then smoke, then container images and npm packages, then a draft GitHub release. And how to rehearse the whole thing without tagging.
+---
+
+`.github/workflows/release.yml` is the whole of it. **A tag is the trigger, and
+the tag is the version.**
+
+Nothing in the workflow reads a version from anywhere else: `v1.0.0` publishes
+`1.0.0`, and the job fails if the workspace does not already say `1.0.0`.
+Deriving the version from the tag *and* from `package.json` is how a release
+ends up with an image and an npm package that disagree.
+
+## The pipeline
+
+<Mermaid
+  title="Job graph, and what each gate is for"
+  chart={`
+flowchart TB
+  T["push a tag matching v*"] --> V
+  WD["workflow_dispatch<br/>dry_run defaults to true"] --> V
+  V["verify<br/>tag matches every manifest<br/>then build test lint typecheck"]
+  V --> S["smoke<br/>build the images, start the stack,<br/>wait for readiness, bootstrap a<br/>credential, run 48 checks over HTTP"]
+  S --> I["images<br/>GHCR, linux/amd64 + linux/arm64<br/>server and ui"]
+  S --> N["npm<br/>pnpm -r publish --provenance"]
+  I --> G["github_release<br/>notes cut from CHANGELOG.md<br/>published as a DRAFT"]
+  N --> G
+`}
+/>
+
+### `verify` — the same gates as a pull request
+
+A tag is not a reason to skip the ordinary checks; it is the reason to run them.
+The job installs with `--frozen-lockfile` and runs
+`pnpm nx run-many -t build test lint typecheck`.
+
+Before that, on a tag push only, it checks the version:
+
+```bash
+TAG="${GITHUB_REF_NAME#v}"
+DECLARED=$(node -p "require('./package.json').version")
+[ "$TAG" = "$DECLARED" ] || exit 1
+
+# Every workspace package moves in lockstep, so a stale one is a bug.
+for manifest in packages/*/package.json; do
+  VERSION=$(node -p "require('./$manifest').version")
+  [ "$VERSION" = "$DECLARED" ] || exit 1
+done
+```
+
+<Callout type="warn">
+  **Every package moves in lockstep.** There is no independent versioning and no
+  changeset tooling. Bumping the root and forgetting `packages/sdk` fails here
+  rather than publishing an sdk that says it is a version behind.
+</Callout>
+
+### `smoke` — the gate that catches what the suite structurally cannot
+
+This is the important one. It builds the images with
+`docker compose up -d --build`, polls `/v1/health/ready` for five minutes,
+creates the first credential with `nf bootstrap`, and runs
+`node scripts/smoke.mjs`.
+
+Readiness rather than liveness, deliberately: readiness is the probe that
+asserts the schema matches the binary, so waiting on it also proves the
+migrations ran.
+
+The bootstrap token is masked with `::add-mask::` before it reaches the
+environment, and on failure the job dumps
+`docker compose logs --no-color` — without that a failure is a bare exit code
+and the reason is in a container log nothing else prints.
+
+Everything `smoke` has caught passed `build test lint typecheck` first. That is
+the point of it, and [Testing](/docs/contributing/testing) lists the defects.
+The same job also runs on every push to `main` and every pull request, in
+`.github/workflows/ci.yml`, so a regression does not wait for a tag.
+
+### `images` — GHCR, multi-arch
+
+`docker/server.Dockerfile` and `docker/ui.Dockerfile`, built for
+`linux/amd64,linux/arm64` with GitHub Actions layer caching, tagged with the
+version and with `latest`.
+
+The image names come from **`github.repository`**, lowercased, rather than a
+hard-coded name — so a fork publishes to its own namespace instead of failing on
+someone else's:
+
+```bash
+SERVER_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/server
+UI_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/ui
+```
+
+Login to GHCR uses the workflow's own `GITHUB_TOKEN`, which is why the job needs
+`packages: write`.
+
+### `npm` — publish with provenance
+
+Builds everything, then gives each **non-private** package a copy of the root
+`LICENSE` and `README.md`:
+
+```bash
+for dir in packages/*/; do
+  node -e "process.exit(require('./${dir}package.json').private ? 0 : 1)" || {
+    cp LICENSE "$dir"
+    cp README.md "$dir"
+  }
+done
+```
+
+npm shows the README that sits *in the package*, and the licence it finds there.
+Both live at the repository root, so each package gets a copy at publish time
+rather than a dozen copies being kept in step by hand.
+
+Then:
+
+```bash
+pnpm -r publish --access public --no-git-checks --provenance
+```
+
+- `--no-git-checks` because the copies above leave the tree dirty, and because
+  the tag has already been verified against every manifest.
+- `--provenance` needs `id-token: write`, which is why that permission is
+  declared.
+- **pnpm rewrites `workspace:*` to the real version as it packs**, so the
+  published manifests carry ordinary semver ranges.
+
+Which packages publish is decided by each manifest's `private` flag and its
+`files` array. The library packages list `dist`, `src`, `README.md` and
+`LICENSE`, and explicitly exclude `**/*.tsbuildinfo`, `**/*.spec.*` and
+`**/testing/**`.
+
+### `github_release` — notes from the changelog
+
+Runs only on a tag, and only after both publish jobs. It extracts the section
+for this version out of `CHANGELOG.md` with awk, and **fails if there is no
+section for it** — so the release notes and the changelog cannot disagree, and a
+release cannot go out undescribed.
+
+```bash
+awk -v v="## $VERSION" '
+  $0 == v { inside = 1; next }
+  inside && /^## / { exit }
+  inside { print }
+' CHANGELOG.md > release-notes.md
+```
+
+The release is created as a **draft**, with `generate_release_notes: false`.
+Somebody reads it before it is public.
+
+## The dry run
+
+```
+Actions → Release → Run workflow → dry_run: true
+```
+
+`workflow_dispatch` exists so the whole thing can be rehearsed without tagging.
+`DRY_RUN` gates only the steps that *publish*:
+
+| Step | On a dry run |
+|---|---|
+| `verify` | Runs in full — except the tag-matching check, which needs a tag |
+| `smoke` | Runs in full, including building the images and driving them over HTTP |
+| GHCR login and push | Skipped; the images are still **built**, for both architectures |
+| `pnpm -r publish` | Replaced by `pnpm -r exec npm pack --dry-run` |
+| GitHub release | Skipped |
+
+Everything that can fail still runs. That is the design: a dry run that skipped
+the build would only prove the workflow's `if` conditions are well-formed.
+
+<Callout type="info">
+  `dry_run` defaults to **true** on the manual trigger, so a mis-click rehearses
+  rather than publishes.
+</Callout>
+
+## Cutting a release
+
+1. **Make the workspace say the new version.** Root `package.json` and every
+   `packages/*/package.json`, in lockstep.
+2. **Write the `CHANGELOG.md` section**, headed exactly `## <version>` — the awk
+   match is exact, and `github_release` fails without it.
+3. **Rehearse.** Run the workflow manually with `dry_run: true`, or at minimum
+   run the gates locally:
+
+   ```bash
+   pnpm nx run-many -t build test lint typecheck
+   docker compose -f docker/docker-compose.yml up -d --build
+   export DATABASE_URL=postgres://nodeflow:nodeflow@localhost:5433/nodeflow
+   pnpm nf bootstrap --namespace default --json
+   KEY=nf_... pnpm smoke
+   KEY=nf_... pnpm e2e
+   ```
+
+4. **Tag and push.** `git tag v1.2.3 && git push origin v1.2.3`.
+5. **Read the draft release**, then publish it.
+
+<Callout type="warn">
+  Before 1.0.0, the way this was *actually* verified is worth copying: `docker
+  compose down -v` to destroy the volume, then `up`, then the README's commands
+  **in the order the README gives them**, as a stranger would meet them. That is
+  how `pnpm nf bootstrap` — the first command in the quickstart — was discovered
+  not to exist, and to need a `DATABASE_URL` the quickstart never mentioned. The
+  quickstart is the one path guaranteed to be walked by someone with no context,
+  and it was the least exercised.
+</Callout>
+
+## Two things code cannot decide
+
+Both are recorded in PLAN.md as release prerequisites, and both are decisions
+rather than work.
+
+**The git remote.** The workflow derives both the GitHub release target and the
+GHCR namespace from `github.repository`, so it needs the repository to exist and
+nothing more.
+
+**The npm scope.** `@node-flow-dev` is the decided scope, and the rename is a
+tool rather than a project: `node scripts/rename-scope.mjs @node-flow-dev` is
+the whole change. It rewrites every occurrence, including the
+`@node-flow-dev/source` export condition, and deliberately leaves
+`pnpm-lock.yaml` alone (it is derived; a hand-edited lockfile disagrees with its
+own integrity hashes and fails at the next `--frozen-lockfile` install) and the
+script itself (which names the old scope in its own constant). Nx project names
+are not renamed — they are internal identifiers in the task graph, unrelated to
+what npm calls a package.
+
+Neither blocks the container images or the GitHub release; only npm waits on the
+rename.
+
+## Why the release itself is a verification step
+
+Everything in the table on [Testing](/docs/contributing/testing) was found by
+*running the artefact* after `build test lint typecheck` was already green. The
+reason generalises past any one bug:
+
+> The suite exercises the **source**; a release ships an **artefact**, and the
+> gap between the two is where the defects that survive a green build live.
+
+Several of those were invisible to any check that reads source at all — the
+bundle's externals, a browser parsing real HTML, a clock and timezone that
+differ from the container's, and someone with no context typing the quickstart
+commands in order. That is why `smoke` sits between `verify` and every publish
+step, and why nothing is pushed until it passes.

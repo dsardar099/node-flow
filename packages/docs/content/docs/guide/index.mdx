@@ -1,0 +1,197 @@
+---
+title: What node-flow is
+description: A workflow orchestrator where the DAG is data, the workers poll, and Postgres is the only dependency.
+---
+
+node-flow runs processes you describe as **data**. A workflow is a JSON DAG, not
+a program. Your workers poll a queue for the steps they own, in whatever
+language they happen to be written in, and node-flow makes sure every step runs,
+retries, times out and compensates the way the definition said it should —
+across restarts, deploys and failures.
+
+Orkes Conductor needs Redis, Cassandra and Elasticsearch to stand up. node-flow
+needs Postgres 18.
+
+## The model in one picture
+
+<Mermaid
+  title="How a run moves through the system"
+  chart={`
+flowchart LR
+  subgraph Clients
+    API_CALLER[Your service / CLI / UI]
+    CRON[Schedules, webhooks, events]
+  end
+
+  subgraph nodeflow[node-flow server]
+    APIROLE[api role<br/>REST + long-poll]
+    DECIDER[decider role<br/>pure decide function]
+    POLLER[poller role<br/>timers, outbox, system tasks]
+  end
+
+  PG[(PostgreSQL 18<br/>state, queue, timers, outbox, search)]
+
+  subgraph Yours[Your workers, any language]
+    W1[charge worker]
+    W2[ship worker]
+  end
+
+  API_CALLER --> APIROLE
+  CRON --> APIROLE
+  APIROLE --> PG
+  DECIDER <--> PG
+  POLLER <--> PG
+  W1 -->|lease / heartbeat / report| APIROLE
+  W2 -->|lease / heartbeat / report| APIROLE
+  POLLER -->|HTTP, SQL, gRPC, LLM| EXT[External systems]
+`}
+/>
+
+There is one image. `NODE_FLOW_ROLES` decides which of the three roles a
+container runs; the development default runs all three in one process.
+
+## A workflow is a document
+
+```json
+{
+  "name": "fulfil_order",
+  "version": 1,
+  "inputParameters": ["orderId", "amount"],
+  "tasks": [
+    {
+      "name": "charge",
+      "taskReferenceName": "charge",
+      "type": "SIMPLE",
+      "inputParameters": { "amount": "${workflow.input.amount}" }
+    },
+    {
+      "name": "ship",
+      "taskReferenceName": "ship",
+      "type": "SIMPLE",
+      "inputParameters": { "txn": "${charge.output.txnId}" }
+    }
+  ],
+  "outputParameters": { "receipt": "${charge.output.txnId}" }
+}
+```
+
+`POST` that to `/v1/ns/default/metadata/workflows` and it is registered. Start a
+run and the engine schedules `charge`; a worker polling the `charge` queue
+leases it, does the work and reports `{ "txnId": "..." }`; the engine resolves
+`${charge.output.txnId}` and schedules `ship`.
+
+## Three families of task
+
+The distinction drives *where* work happens, and it is the first thing to
+internalise.
+
+| Family | Who runs it | Examples |
+|---|---|---|
+| **Worker task** | A process you wrote, polling a queue | `SIMPLE` |
+| **Operator** | The decider, inside the evaluation transaction — no I/O, never queued | `SWITCH`, `FORK_JOIN`, `JOIN`, `DO_WHILE`, `SUB_WORKFLOW`, `TERMINATE`, `SET_VARIABLE`, `NOOP`, `EVENT` |
+| **System task** | The server itself, through the task registry | `HTTP`, `INLINE`, `JSON_JQ_TRANSFORM`, `JDBC`, `GRPC`, `WEBHOOK`, `EMAIL`, `BUSINESS_RULE`, the AI tasks |
+
+A fourth, smaller group is **waiting tasks** — `WAIT`, `WAIT_FOR_WEBHOOK`,
+`HUMAN`, `PULL_WORKFLOW_MESSAGES`. Nothing executes them. They are not queued
+and hold no lease, so a seven-day wait or a three-week approval costs one row
+and nothing else.
+
+## When to use this, and when not to
+
+Temporal, Inngest, Restate and friends say "write an async function, we make it
+durable". That is a good model and a crowded one. node-flow is deliberately the
+*other* model, and the trade is explicit.
+
+<Mermaid
+  title="Two models, two boundaries"
+  chart={`
+flowchart TB
+  subgraph DUR[Durable execution: Temporal, Restate, Inngest]
+    D1[Your code IS the workflow]
+    D2[Determinism rules, replay, versioning hazards]
+    D3[SDK per language, workflow runtime in-process]
+    D1 --> D2 --> D3
+  end
+
+  subgraph ORC[Orchestration: node-flow, Conductor]
+    O1[A JSON document IS the workflow]
+    O2[Engine owns control flow; your code owns one step]
+    O3[Workers are plain HTTP clients, no runtime]
+    O1 --> O2 --> O3
+  end
+`}
+/>
+
+**Choose node-flow when:**
+
+- the process crosses teams, services or languages, and no single codebase owns it;
+- an operator who does not read your code has to see a run, retry a step, or terminate it;
+- the diagram is the artefact people argue about — a payment flow, an onboarding, a claims process;
+- you want long waits (days, weeks) to cost nothing, and human approvals to be first-class;
+- you want one dependency to run, back up and understand.
+
+**Choose a durable-execution library when:**
+
+- the workflow lives entirely inside one team's service in one language;
+- the logic is genuinely code — loops with complex state, rich types, business
+  rules that would be miserable as JSON;
+- you never need a non-engineer to look at it.
+
+<Callout type="info">
+  These are not mutually exclusive. It is completely reasonable to have
+  node-flow own the cross-team process and call a Temporal workflow as one
+  `SIMPLE` step inside it.
+</Callout>
+
+## What you get out of the box
+
+| | |
+|---|---|
+| **Operators** | `SWITCH`, `FORK_JOIN`/`JOIN`, `EXCLUSIVE_JOIN`, `FORK_JOIN_DYNAMIC`, `DO_WHILE`, `DYNAMIC`, `SUB_WORKFLOW`, `START_WORKFLOW`, `TERMINATE`, `SET_VARIABLE`, `GET_WORKFLOW`, `YIELD`, `NOOP`, saga `compensateWith` |
+| **System tasks** | HTTP, HTTP_POLL, INLINE (QuickJS-on-WASM sandbox), jq, SQL, gRPC, events, Kafka publish, signed outbound webhooks, wait-for-webhook, human tasks, business rules, signed JWTs, email |
+| **AI** | LLM text and chat, embeddings, chunking, vector indexes in Postgres, MCP client tasks, a durable `AGENT` loop, image/audio/video generation, guardrails |
+| **Triggers** | Leased cron with timezones, inbound webhooks with signature verification, event handlers on Kafka, NATS, AMQP, SQS and Redis Streams |
+| **Control plane** | Namespaces, RBAC with groups and tag-based access, resource grants, API keys, service accounts, mTLS, OIDC workload identity, OIDC and SAML SSO, sealed secrets, audit log, quotas |
+| **Operations** | Live execution viewer (SSE), visual DAG editor, retry / rerun-from-task / terminate, bulk actions, human-task inbox, queue and worker dashboards, saved searches |
+| **Developer experience** | `@node-flow-dev/testkit` unit tests with no server, deterministic replay, the `nf` CLI, generated Python/Go/Java/TypeScript clients, BPMN 2.0 import |
+| **Compatibility** | [Conductor compatibility](/docs/guide/conductor) at `/conductor/api` — connect existing clients with node-flow credentials and a supported workflow/worker protocol |
+
+## Design decisions that leak into how you use it
+
+These are not trivia. Each one changes what you can and cannot write.
+
+**The engine is a pure function.** `decide(blueprint, state) → commands` does no
+I/O. That is why `nf test` can run a whole workflow in milliseconds with no
+server, and why replay can prove a definition still reproduces a recorded run.
+It is also why `SWITCH` will not execute JavaScript and `DO_WHILE` conditions are
+a restricted comparison grammar — see [Workflows](/docs/guide/workflows).
+
+**Never load the whole workflow.** A definition compiles once, at registration,
+into a *blueprint* that records exactly which other tasks each task's
+expressions reference. An evaluation loads the pending frontier plus those refs,
+so a 30,000-task workflow evaluates as cheaply as a five-task one.
+
+**No side effect escapes a transaction.** Every outbound action goes through a
+transactional outbox, so a crash mid-evaluation loses nothing and duplicates
+nothing that was not already at-least-once.
+
+**Secrets are never resolved during evaluation.** `${secrets.NAME}` survives the
+decider untouched and is substituted once, at dispatch, into the copy handed to
+the executor or worker. A resolved secret would otherwise be written into the
+stored task input, where it would sit in the execution history in clear.
+
+**Controls are enforced server-side.** Concurrency caps, rate limits and
+semaphores are applied at dequeue, not in an SDK — because anything enforced in
+an SDK is advisory and the first worker written in another language bypasses it.
+
+## Where to go next
+
+- [Quickstart](/docs/guide/quickstart) — from nothing to a completed run, in about a minute.
+- [Concepts](/docs/guide/concepts) — the vocabulary: namespaces, queues, references, expressions.
+- [Workflows](/docs/guide/workflows) — the JSON DSL, every operator, worked examples.
+- [System tasks](/docs/guide/system-tasks) — everything the server runs for you.
+- [Workers](/docs/guide/workers) — writing one, in TypeScript or over plain REST.
+- [Execution controls](/docs/guide/execution-controls) — retries, timeouts, concurrency, rate limits.
+- [Self-hosting](/docs/guide/self-hosting) — managed Postgres, published images, scaling roles.
+- [Configuration](/docs/guide/configuration) — every environment variable.
+- [CLI](/docs/guide/cli) and [API](/docs/guide/api).

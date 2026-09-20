@@ -1,0 +1,69 @@
+{
+  "name": "@node-flow-dev/tasks",
+  "version": "1.0.0",
+  "private": true,
+  "description": "System task implementations — HTTP, INLINE, JQ, gRPC, SQL, webhooks and the AI tasks.",
+  "license": "LicenseRef-node-flow-1.0",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "!**/*.tsbuildinfo",
+    "!**/*.spec.*",
+    "!**/testing/**"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "@node-flow-dev/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "nx": {
+    "name": "tasks",
+    "tags": [
+      "scope:infra",
+      "type:feature"
+    ]
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.56",
+    "@ai-sdk/google": "^4.0.74",
+    "@ai-sdk/openai": "^4.0.69",
+    "@ai-sdk/openai-compatible": "^3.0.51",
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.8.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@node-flow-dev/core": "workspace:*",
+    "ai": "^7.0.105",
+    "jq-wasm": "3.0.0-jq-1.8.2",
+    "pg": "^8.23.0",
+    "quickjs-emscripten": "^0.32.0",
+    "tslib": "^2.3.0",
+    "unpdf": "^1.8.1"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.1.0",
+    "@types/pg": "^8.23.1",
+    "nodemailer": "^10.0.10",
+    "testcontainers": "^12.1.0"
+  },
+  "peerDependencies": {
+    "nodemailer": "^10.0.10"
+  },
+  "peerDependenciesMeta": {
+    "nodemailer": {
+      "optional": true
+    }
+  }
+}

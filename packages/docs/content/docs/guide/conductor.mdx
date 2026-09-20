@@ -1,0 +1,519 @@
+---
+title: Conductor compatibility
+description: Connect Conductor clients to node-flow, authenticate, register workflows, run workers, and understand the migration boundaries.
+---
+
+Already have Conductor workflows or workers? node-flow exposes a **Conductor-shaped
+REST API at `/conductor/api`**. It translates supported requests into the same
+metadata, execution, and queue services used by the native `/v1` API. You do not
+need a separate Conductor server, database, or compatibility process.
+
+<Callout type="warn">
+  This is a compatibility layer, **not full Conductor or Orkes platform parity**.
+  A client using the supported workflow and worker endpoints can reuse its wire
+  protocol, but credentials, definitions, and optional SDK features still need
+  a migration review. Read [Migration boundaries](#migration-boundaries) before
+  switching a production fleet.
+</Callout>
+
+## How it fits together
+
+<Mermaid
+  title="Two API surfaces, one execution engine and one source of state"
+  chart={`
+flowchart TB
+  SDK[Conductor SDK or worker] --> COMPAT[Conductor API<br/>/conductor/api]
+  NATIVE[Native client or dashboard] --> API[Native API<br/>/v1]
+  COMPAT --> SERVICES[Shared metadata, execution and queue services]
+  API --> SERVICES
+  SERVICES --> PG[(Postgres<br/>definitions, runs and task leases)]
+  RUNNERS[Decider and poller roles] <--> PG
+`}
+/>
+
+Compatibility is included in the server's API application; there is no enable
+flag. Workflows still need the **decider** and **poller** roles to make progress.
+The default [Quickstart](/docs/guide/quickstart) Compose stack runs all three
+roles. The API is on port **3000**, not the dashboard's 3100 or this docs site's
+4200. For separately deployed roles, see [Self-hosting](/docs/guide/self-hosting).
+
+## Connection settings
+
+The prefix depends on whether your SDK appends `/api` itself:
+
+| Client | Local base URL | Why |
+|---|---|---|
+| `@io-orkes/conductor-javascript` | `http://localhost:3000/conductor` | Builds `/api/token`, `/api/tasks/...`, and other paths itself |
+| Python and Java Conductor clients expecting an API-root URL | `http://localhost:3000/conductor/api` | Their base already includes `/api` |
+| Direct HTTP requests | `http://localhost:3000/conductor/api` | Append the endpoint, such as `/workflow` |
+| Native node-flow clients | `http://localhost:3000/v1` | A different contract, not a Conductor SDK base URL |
+
+Use HTTPS outside local development. When configuring another SDK version,
+inspect the resulting request URL: token exchange must reach
+`/conductor/api/token`, not `/api/token`, `/v1/conductor/api/token`, or
+`/conductor/api/api/token`.
+
+The JavaScript example below targets **4.0.0**, the version pinned in this
+repository. The project's real-SDK regression suite exercises its client and
+workflow builders. That is not a certification of every Python, Java, or newer
+JavaScript SDK feature.
+
+## Credentials and permissions
+
+### The credential selects the namespace
+
+Unlike native paths, compatibility paths do not contain `/ns/{namespace}`.
+The namespace comes from the authenticated node-flow credential. Create the
+credential in the namespace that will own the definitions and executions.
+Existing credentials from another Conductor installation are not imported by
+changing the URL.
+
+Use [Quickstart → Mint an API key](/docs/guide/quickstart#mint-an-api-key) for a
+local administrator key. Then create narrowly scoped credentials for your
+publisher and workers. The underlying services retain node-flow's authorization,
+validation, quotas, and resource checks.
+
+| Responsibility | Scopes |
+|---|---|
+| Register workflow and task definitions | `workflows:write` |
+| Read workflow and task definitions | `workflows:read` |
+| Start a run or restart as a new run | `executions:start` |
+| Read runs, task details, search, and queue sizes | `executions:read` |
+| Pause, resume, retry, rerun, terminate | `executions:write` |
+| Poll and report `greet` tasks | `tasks:report` **and** `queues:lease:greet` |
+| Poll `greet` in domain `eu-west` | `tasks:report` **and** `queues:lease:greet:eu-west` |
+
+### Service accounts
+
+Create a service account with an administrator key. This example combines the
+permissions needed for the tutorial; use separate publisher and worker accounts
+in production.
+
+```bash
+export NF_URL=http://localhost:3000
+# Set NF_ADMIN_KEY to your locally issued administrator API key.
+
+ACCOUNT=$(curl --fail-with-body -sS "$NF_URL/v1/auth/service-accounts" \
+  -H "Authorization: Bearer $NF_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "conductor-local-demo",
+    "scopes": [
+      "workflows:read", "workflows:write",
+      "executions:start", "executions:read",
+      "tasks:report", "queues:lease:greet"
+    ]
+  }')
+
+export CONDUCTOR_KEY_ID=$(printf '%s' "$ACCOUNT" | jq -er '.keyId')
+export CONDUCTOR_KEY_SECRET=$(printf '%s' "$ACCOUNT" | jq -er '.secret')
+unset ACCOUNT
+```
+
+The secret is returned **once**. Keep it in a secret manager, not source code or
+browser JavaScript. The account belongs to the administrator credential's
+namespace; a body-supplied namespace does not select another tenant.
+
+The SDK exchanges `keyId` and `keySecret` for a short-lived JWT. Here is the same
+exchange over HTTP (the following shell examples require `curl` and `jq`):
+
+```bash
+export CONDUCTOR_API="$NF_URL/conductor/api"
+TOKEN=$(jq -n \
+  --arg keyId "$CONDUCTOR_KEY_ID" \
+  --arg keySecret "$CONDUCTOR_KEY_SECRET" \
+  '{keyId: $keyId, keySecret: $keySecret}' |
+  curl --fail-with-body -sS "$CONDUCTOR_API/token" \
+    -H 'Content-Type: application/json' --data-binary @- |
+  jq -er '.token')
+```
+
+Subsequent compatibility calls use **`X-Authorization: <raw token>`**, without a
+`Bearer` prefix. Native calls use `Authorization: Bearer <token>` instead.
+Re-exchange expired tokens when using direct HTTP; do not assume the shell
+variable stays valid indefinitely.
+
+### API-key alternative
+
+For a client using an `nf_` API key, pass that key as `keySecret` and any nonempty
+`keyId` (for example `node-flow`). The token endpoint validates the key and
+returns the same key as `token`; it does not mint a JWT for this mode. It retains
+the key's namespace, scopes, and revocation behavior. Direct HTTP callers can
+also send the key in `X-Authorization` without exchanging it first.
+
+## Run a complete workflow over HTTP
+
+This small example proves the entire protocol before you migrate an existing
+application. Use the credentials and `CONDUCTOR_API` from above. Run these steps
+in the same shell against a local or disposable namespace.
+
+### 1. Register a definition
+
+```bash
+curl --fail-with-body -sS "$CONDUCTOR_API/metadata/workflow" \
+  -H "X-Authorization: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{
+  "name": "hello_conductor",
+  "version": 1,
+  "tasks": [{
+    "name": "greet",
+    "taskReferenceName": "greeting",
+    "type": "SIMPLE",
+    "inputParameters": { "name": "${workflow.input.name}" }
+  }],
+  "outputParameters": { "message": "${greeting.output.message}" }
+}
+JSON
+```
+
+The quoted `JSON` delimiter prevents the shell from expanding node-flow's
+`${...}` expressions. Registration returns `{}` on success. The worker polls
+the **task name** `greet`, not its reference `greeting` or workflow name.
+An explicit task definition is optional for this minimal example; register one
+through `/metadata/taskdefs` when you need custom retry and timeout policies.
+Repeating registration for an existing name/version returns a conflict even
+if its content is unchanged. Read the existing definition or choose a new
+name/version when rerunning this tutorial.
+
+### 2. Start an execution
+
+```bash
+WORKFLOW_ID=$(curl --fail-with-body -sS "$CONDUCTOR_API/workflow" \
+  -H "X-Authorization: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"hello_conductor","version":1,"input":{"name":"Ada"}}')
+printf 'Workflow: %s\n' "$WORKFLOW_ID"
+```
+
+The response is a **plain-text workflow ID**, not `{ "workflowId": ... }` and
+not a JSON-quoted string. Do not pipe it through `jq`. Starting a run does not
+complete its worker tasks; the next step supplies the worker.
+
+### 3. Poll for the task
+
+```bash
+TASKS=$(curl --fail-with-body -sS \
+  "$CONDUCTOR_API/tasks/poll/batch/greet?workerid=demo-worker-1&count=1&timeout=10000" \
+  -H "X-Authorization: $TOKEN")
+TASK=$(printf '%s' "$TASKS" | jq -ec '.[0] // empty')
+```
+
+Batch polling returns an array; an empty array means no task became available
+during the wait. If the last command fails because there is no task, repeat
+the poll—do not continue to the report step with an empty task. In a shared
+queue, polling can return another run's task; the report below deliberately
+uses the identifiers from the **leased task**, not a guessed workflow ID.
+
+`timeout` is in **milliseconds**; the adapter rounds it up to seconds for the
+native long poll. `count` defaults to 1 and is capped at 100. Single polling at
+`/tasks/poll/greet?workerid=demo-worker-1` returns a task or HTTP **204** if empty.
+
+### 4. Report the result
+
+```bash
+printf '%s' "$TASK" |
+  jq '{
+    workflowInstanceId,
+    taskId,
+    workerId: "demo-worker-1",
+    status: "COMPLETED",
+    outputData: {message: ("Hello, " + .inputData.name + "!")}
+  }' |
+  curl --fail-with-body -sS "$CONDUCTOR_API/tasks" \
+    -H "X-Authorization: $TOKEN" \
+    -H 'Content-Type: application/json' --data-binary @-
+```
+
+This returns the task ID as plain text. Use the same `workerId` when polling
+and reporting. Workers should be idempotent: retries and redelivery remain
+possible even when a result is reported successfully.
+
+### 5. Read the completed run
+
+```bash
+curl --fail-with-body -sS "$CONDUCTOR_API/workflow/$WORKFLOW_ID" \
+  -H "X-Authorization: $TOKEN" |
+  jq '{workflowId, status, output}'
+```
+
+The decider processes completion asynchronously. Repeat the read if it still
+says `RUNNING`; the expected terminal result is `COMPLETED` with output
+`{"message":"Hello, Ada!"}`. The same execution is visible in the node-flow
+dashboard when signed into the credential's namespace.
+
+## Use the JavaScript SDK
+
+The SDK speaks the same HTTP protocol. Keep the credentials from above and set
+the prefix **without `/api`**:
+
+```bash
+export CONDUCTOR_SERVER_URL=http://localhost:3000/conductor
+# In your own worker application's directory:
+npm install @io-orkes/conductor-javascript@4.0.0
+```
+
+### Register and start with the real workflow builder
+
+Save this as `register.mjs`. It follows the builder wiring exercised by
+`scripts/e2e/conductor-sdk.mjs` in this repository.
+
+```js
+import {
+  ConductorWorkflow,
+  WorkflowExecutor,
+  orkesConductorClient,
+  simpleTask,
+} from '@io-orkes/conductor-javascript';
+
+const client = await orkesConductorClient({
+  serverUrl: process.env.CONDUCTOR_SERVER_URL,
+  keyId: process.env.CONDUCTOR_KEY_ID,
+  keySecret: process.env.CONDUCTOR_KEY_SECRET,
+});
+const executor = new WorkflowExecutor(client);
+
+// A separate name avoids colliding with the HTTP tutorial's definition.
+const definition = new ConductorWorkflow(executor, 'hello_conductor_sdk', 1)
+  .description('A Conductor builder targeting node-flow')
+  .ownerEmail('ops@example.com')
+  .add(simpleTask('greeting', 'greet', {
+    name: '${workflow.input.name}',
+  }));
+
+await definition.register(true);
+const workflowId = await executor.startWorkflow({
+  name: 'hello_conductor_sdk',
+  version: 1,
+  input: { name: 'Ada' },
+});
+console.log('Started:', workflowId);
+```
+
+Run `node register.mjs`. Then run the worker below. The builder example leaves
+workflow output mapping unset; inspect `tasks[].outputData` for the greeting
+using `executor.getWorkflow(workflowId, true)` or the HTTP read endpoint.
+Registering with `true` does **not** make node-flow versions mutable: increment
+the version when changing a stored definition.
+
+### Run a worker with TaskManager
+
+Save this as `worker.mjs`. `TaskManager` is the SDK's legacy polling API; it is
+shown explicitly because its batch-poll and task-result paths match this
+adapter. Do not assume every newer worker feature uses those same endpoints.
+
+```js
+import { randomUUID } from 'node:crypto';
+import { orkesConductorClient, TaskManager } from '@io-orkes/conductor-javascript';
+
+const client = await orkesConductorClient({
+  serverUrl: process.env.CONDUCTOR_SERVER_URL,
+  keyId: process.env.CONDUCTOR_KEY_ID,
+  keySecret: process.env.CONDUCTOR_KEY_SECRET,
+});
+
+const manager = new TaskManager(client, [{
+  taskDefName: 'greet',
+  execute: async (task) => ({
+    status: 'COMPLETED',
+    outputData: { message: `Hello, ${task.inputData?.name ?? 'world'}!` },
+  }),
+}], {
+  options: {
+    workerID: `greet-${randomUUID()}`,
+    concurrency: 1,
+    pollInterval: 1000,
+    batchPollingTimeout: 10000,
+  },
+});
+
+manager.startPolling();
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, async () => {
+    await manager.stopPolling();
+    process.exit(0);
+  });
+}
+```
+
+Run `node worker.mjs` in a shell with the same connection variables. For a
+production fleet, replace the tutorial credential with one restricted to
+`tasks:report` and `queues:lease:greet`. `workerID` in TaskManager options is
+capitalized differently from the wire result's `workerId`.
+
+The pinned SDK probes `/tasks/update-v2` and falls back to legacy `POST /tasks`
+on 404/405. node-flow implements the **legacy endpoint**, not update-v2. A
+probe 404 followed by a successful legacy report is expected; clients without
+that fallback need a supported reporting path.
+
+## Worker semantics and domains
+
+<Mermaid
+  title="A worker lease from polling through completion"
+  chart={`
+sequenceDiagram
+  participant W as Conductor worker
+  participant A as Compatibility API
+  participant Q as Task queue
+  W->>A: Poll with task type and workerid
+  A->>Q: Lease in credential namespace
+  Q-->>A: Task and current lease
+  A-->>W: Task with inputData and IDs
+  W->>A: IN_PROGRESS with callbackAfterSeconds
+  A->>Q: Extend the current lease
+  W->>A: COMPLETED with outputData
+  A->>Q: Check worker identity and report
+  A-->>W: Plain-text task ID
+`}
+/>
+
+| Reported status | node-flow behavior |
+|---|---|
+| `COMPLETED` | Completes the task with `outputData` |
+| `FAILED` | Fails the attempt; configured retry policy applies |
+| `FAILED_WITH_TERMINAL_ERROR` | Reports a terminal task error |
+| `COMPLETED_WITH_ERRORS` | Mapped to `FAILED`, **not** successful completion |
+| `IN_PROGRESS` | Extends the lease by at least 60 seconds; uses `max(callbackAfterSeconds, 60)` with a default of 60 |
+| Any other status | Rejected as an invalid worker result |
+
+`IN_PROGRESS` is a **lease extension**, not a promise to release and requeue
+the task after a callback delay. For long work, send heartbeats before the
+lease expires. Do not enable an SDK's dedicated lease-extension feature unless
+its endpoint is supported; this adapter exposes heartbeat behavior through
+`POST /tasks` with `IN_PROGRESS`. See [Workers](/docs/guide/workers) for the
+native lease-token protocol and stronger fencing guarantees.
+
+To route `greet` to a domain, start with
+`"taskToDomain": {"greet":"eu-west"}` and poll with `domain=eu-west`.
+The queue is `greet:eu-west`; grant `queues:lease:greet:eu-west` explicitly.
+A credential for the undomained `greet` queue does not grant access to it.
+Both publisher and worker must agree on the domain.
+
+## Supported endpoint families
+
+All paths below are relative to `/conductor/api`. For the complete operation
+list, request schemas, and interactive calls, open the **conductor** tag in the
+[Scalar API reference](/api-reference). The
+[REST API compatibility section](/docs/guide/api#what-is-translated) also lists
+each implemented route.
+
+| Surface | Operations | Important detail |
+|---|---|---|
+| `/token` | Credential exchange | Service account or `nf_` API key |
+| `/metadata/workflow` | Register, bulk register, list, fetch, delete version | Fetch a version with `?version=1`; versions remain immutable |
+| `/metadata/taskdefs` | Create, update, list, fetch | POST accepts an array; PUT accepts one definition |
+| `/workflow` | Start, read, correlated lookup, search | Start returns a plain-text ID |
+| `/workflow/execute/...` | Start and wait | Default wait is 10 seconds; capped at 60; a returned run may still be running |
+| `/workflow/{id}/...` | Pause, resume, retry, restart, rerun | Restart creates a new execution; rerun uses a task ID to find its reference |
+| `DELETE /workflow/{id}` | Terminate a run | Not deletion of its history |
+| `/tasks/poll/...` | Single and batch poll | `workerid` query parameter; optional domain |
+| `POST /tasks` | Report, fail, or heartbeat | Requires `workflowInstanceId` and `taskId` |
+| `/tasks/{workflowId}/{taskRefName}/{status}` | Report by reference | Body is output data; optional `workerid` query parameter |
+| `/tasks/{taskId}` and `/tasks/{taskId}/log` | Read task and append log | Logging requires a held lease |
+| `/tasks/queue/sizes` | Queue depths | Supply `taskType`; counts available and delayed work, not in-flight work |
+
+Do not infer support from a method's presence in a Conductor SDK. Orkes-specific
+management APIs, SDK-only endpoint variants, and routes absent from the adapter
+are outside this compatibility contract. Use native node-flow APIs for features
+such as its administration, integrations, and scheduling.
+
+## Migration boundaries
+
+### Definitions are validated, not blindly imported
+
+| Existing definition feature | What to check |
+|---|---|
+| `SIMPLE` worker tasks | Preserve task names, input/output mappings, and worker queue permissions |
+| HTTP `inputParameters.http_request` | Accepted alongside node-flow's direct HTTP input spelling; node-flow's SSRF policy still applies |
+| `SWITCH` with `evaluatorType: "value-param"` | Supported, including the SDK's `switchCaseValue` parameter wiring |
+| JavaScript `SWITCH` expressions | Rejected at registration; rewrite using a supported evaluator |
+| `DO_WHILE` using `$.loop['iteration']` | Rejected at registration; rewrite using the restricted node-flow comparison grammar |
+| `${workflow.variables.x}` and `${workflow.env.X}` | Supported; provision environment values in the target namespace |
+| Duration strings such as `"10m 30s"` | Supported by duration-based tasks |
+| Builder-emitted `failureWorkflow: ""` | Accepted as no failure workflow; a nonempty name is retained |
+| `asyncComplete` | Accepted but inert; use an explicit wait/yield/webhook pattern |
+| Updating a registered version | Changed content cannot overwrite an immutable version; publish a new version |
+
+See [Authoring workflows](/docs/guide/workflows) for the supported task grammar
+and [System tasks](/docs/guide/system-tasks) for executor-specific inputs.
+Register task policies, secrets, environment values, and referenced child or
+failure workflows in the target namespace before relying on them.
+
+### Fencing is weaker than the native worker API
+
+Conductor results do not carry a node-flow lease token. The adapter reads the
+current token from the task row and checks a supplied `workerId` against the
+stored worker. It rejects an unleased task and mismatching worker IDs, but a
+stale process reusing the same ID can still look like the current worker.
+The identity comparison is conditional on IDs being present: **always supply
+a worker ID**, use a unique one per process, and make side effects idempotent.
+Use the native API if correctness requires the caller's lease token to be fenced.
+
+### Search is a subset, not Elasticsearch
+
+The adapter recognizes `workflowType = ...`, `correlationId = ...`,
+`status = ...`, and `status IN (...)`. For example:
+
+```text
+workflowType='hello_conductor' AND status IN (FAILED,TIMED_OUT)
+```
+
+<Callout type="warn">
+  Unsupported query clauses are **ignored**, not rejected. A time-range clause,
+  unsupported operator, or complex Boolean query can therefore produce a
+  broader result set than intended. Do not use a migrated query for bulk
+  destructive operations without verifying the selected IDs.
+</Callout>
+
+`freeText` is forwarded to native search unless it is `*`. `size` is capped at
+200. `start` slices the fetched page rather than seeking across the full result
+set, and `totalHits` is not a full database count. Use native cursor-based search
+for complete pagination or queries outside this subset.
+
+### Execution controls do not all have identical semantics
+
+Restart creates a **new run with the same input** and returns its ID; it does
+not reset the old run in place. Rerun supports `reRunFromTaskId` by resolving
+the task reference, but does not apply a Conductor `taskInput` override.
+Verify these behaviors before porting operational scripts.
+
+The adapter does not transfer running executions, queues, users, or historical
+data from a Conductor deployment. Register definitions and start new runs on
+node-flow; plan separately how existing executions will drain on their original
+engine. A base-URL change alone is not a state migration.
+
+## Troubleshooting and rollout checklist
+
+| Symptom | First checks |
+|---|---|
+| Token exchange is 404 | Use the server origin and the SDK-specific prefix, not the dashboard or docs origin |
+| Token exchange works, next call is 401 | Use the raw token in `X-Authorization`; check expiry and credential revocation |
+| Polling returns 403 | Both `tasks:report` and the exact queue/domain lease scope are required |
+| Polling is empty | Check credential namespace, task name, domain, decider/poller health, and whether a task is already leased |
+| Registration fails | Read the error's `message`; it includes schema paths such as `tasks.0.inputParameters` |
+| Report is refused | Preserve task IDs and worker identity; do not report a task after losing its lease |
+| update-v2 returns 404 | Confirm the SDK falls back to `POST /tasks`; the v2 endpoint is not implemented |
+| Search misses pages or returns unexpected matches | Use only the documented subset or move to native cursor-based search |
+
+Before switching traffic:
+
+1. Register representative definitions using your **actual SDK and builders**.
+2. Run one complete poll/report cycle with a production-like scoped credential.
+3. Exercise failures, retries, long-running work, domains, child workflows, and
+   any control operations your application uses.
+4. Verify results and side effects—not just successful HTTP responses.
+5. Drain old runs deliberately and switch new starts only after those checks pass.
+
+The repository's regression coverage lives in
+`scripts/e2e/conductor-sdk.mjs`, `scripts/e2e/interfaces.mjs`, and the
+Conductor section of `packages/server/src/app/api.spec.ts`. See
+[Testing](/docs/contributing/testing) for running these against an isolated
+stack; they create test credentials, definitions, and executions.
+
+## Next
+
+- [REST API](/docs/guide/api#conductor-compatibility) — endpoint overview and native equivalents.
+- [Workers](/docs/guide/workers) — native SDKs, leases, heartbeats, and idempotency.
+- [Security model](/docs/guide/security) — scopes, namespaces, and service accounts.
+- [Scalar API reference](/api-reference) — inspect and try the implemented operations.

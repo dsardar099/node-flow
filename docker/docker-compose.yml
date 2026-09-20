@@ -1,0 +1,121 @@
+name: node-flow
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: node-flow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nodeflow
+      POSTGRES_PASSWORD: nodeflow
+      POSTGRES_DB: nodeflow
+      # Deterministic collation so ORDER BY is stable across machines.
+      POSTGRES_INITDB_ARGS: '--locale-provider=icu --icu-locale=en-US --encoding=UTF8'
+    ports:
+      # 5433 on the host, not 5432, and overridable.
+      #
+      # A developer machine very often already runs Postgres on 5432. Docker
+      # still binds the port in that case rather than reporting a conflict, and
+      # host tools then silently reach the *other* server — which surfaces as
+      # `password authentication failed for user "nodeflow"`, a message that
+      # sends you looking at credentials instead of at the port. Nothing inside
+      # the compose network is affected either way: the services reach each
+      # other on 5432 over the bridge regardless of what is published here.
+      - '${NODE_FLOW_POSTGRES_PORT:-5433}:5432'
+    volumes:
+      # Postgres 18+ wants a single mount at /var/lib/postgresql (data lands in a
+      # version subdirectory), so pg_upgrade --link works without crossing a
+      # mount boundary. Mounting .../data directly is the pre-18 layout and the
+      # image refuses to start on it.
+      - postgres-data:/var/lib/postgresql
+    command:
+      - postgres
+      # The queue is the hot path: it churns rows constantly, so autovacuum must
+      # run far more aggressively than the stock settings allow or dead tuples
+      # accumulate faster than they are reclaimed and dequeue latency degrades.
+      - -c
+      - autovacuum_vacuum_scale_factor=0.02
+      - -c
+      - autovacuum_vacuum_cost_limit=2000
+      - -c
+      - autovacuum_naptime=10s
+      # Async I/O is the Postgres 18 feature that most directly helps us; it
+      # speeds up exactly the vacuum and scan paths the queue stresses.
+      - -c
+      - io_method=worker
+      - -c
+      - max_connections=200
+      # Surface slow queries during development rather than discovering them in load tests.
+      - -c
+      - log_min_duration_statement=500
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nodeflow -d nodeflow']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # The engine. One image, role-selected: this container holds every role, which
+  # is the right shape for a laptop and for a small install. Splitting `api`,
+  # `decider` and `poller` into separate services is a `NODE_FLOW_ROLES` change
+  # and nothing else — see the README.
+  server:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    container_name: node-flow-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://nodeflow:nodeflow@postgres:5432/nodeflow
+      NODE_FLOW_ROLES: api,decider,poller
+      # Development only. A real deployment supplies its own, and the server
+      # refuses to start without one precisely so this cannot be forgotten.
+      NODE_FLOW_JWT_SECRET: development-secret-change-me-at-least-32-chars
+      # Likewise, and for the same reason it is not optional: without a key the
+      # server refuses to store secrets at all rather than keeping them in
+      # clear, so leaving this unset turns the Secrets screen into a 400 on a
+      # stack meant for trying the product. The value is public and in version
+      # control — rotate it with `nf` before anything real goes in.
+      NODE_FLOW_SECRET_KEYS: 'dev:bm9kZS1mbG93LWRldmVsb3BtZW50LWtleS1ub3Qtc2U='
+      # The first administrator, created on a database that has no namespaces.
+      #
+      # Pinning the password is a development convenience and nothing more: it
+      # makes the quickstart copy-pasteable and the credentials the same on
+      # every machine following the README. Leave these unset — as a real
+      # deployment should — and the server generates a password per install and
+      # prints it once at boot, so no two installs share a credential.
+      NODE_FLOW_SEED_EMAIL: you@example.com
+      NODE_FLOW_SEED_PASSWORD: development-password
+      PORT: 3000
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://localhost:3000/v1/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # The dashboard. It reaches the API server-side, so the browser only ever
+  # talks to one origin and the session cookie needs no CORS.
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/ui.Dockerfile
+    container_name: node-flow-ui
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      NODE_FLOW_API_URL: http://server:3000
+      NODE_FLOW_UI_NAMESPACE: default
+      PORT: 3100
+    ports:
+      - '3100:3100'
+
+volumes:
+  postgres-data:

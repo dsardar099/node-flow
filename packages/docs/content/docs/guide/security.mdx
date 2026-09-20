@@ -1,0 +1,297 @@
+---
+title: Security model
+description: Trust boundaries, credentials, authorization, tenant isolation, secret sealing, egress controls, webhooks, and a production-hardening checklist.
+---
+
+Security in an orchestrator is mostly about **who may cause which side effect**.
+A workflow definition can make HTTP calls, query a configured database, publish
+messages, invoke models and wait for callbacks. A worker can report arbitrary
+output. An operator can retry old work. Treating all three as ordinary CRUD
+would miss the places where authority actually changes hands.
+
+This page describes the security boundaries node-flow enforces and the
+deployment decisions it cannot make for you.
+
+<Callout type="warn">
+  node-flow does not make an untrusted workflow author safe to give arbitrary
+  infrastructure access. It makes that access **explicit and operator-owned**:
+  definitions refer to named destinations; operators configure the address and
+  credential out of band.
+</Callout>
+
+## The trust boundaries
+
+<Mermaid
+  title="Credentials terminate at different boundaries; workflow definitions never carry infrastructure credentials"
+  chart={`
+flowchart LR
+  subgraph Humans
+    B[Browser]
+    OP[Operator]
+  end
+  subgraph Workloads
+    WK[Worker]
+    CI[CI / service]
+  end
+  subgraph Edge[API role]
+    SES[Session + CSRF]
+    AUTH[API key / JWT / OIDC / mTLS]
+    AZ[Scopes + grants + tags]
+  end
+  subgraph Namespace
+    DEF[Workflow definition]
+    RUN[Execution]
+    SEC[Sealed secrets]
+  end
+  subgraph OperatorConfig[Deployment configuration]
+    HTTP[HTTP allowlist]
+    DB[Named SQL datasource]
+    MQ[Named broker / SMTP / gRPC / AI integration]
+  end
+  EXT[External systems]
+
+  B --> SES --> AZ
+  OP --> SES
+  WK --> AUTH --> AZ
+  CI --> AUTH
+  AZ --> DEF --> RUN
+  SEC -.->|resolved only at execution| RUN
+  RUN -->|name, never credential| OperatorConfig --> EXT
+`}
+/>
+
+The important separations are:
+
+| Boundary | What crosses it | What does not |
+|---|---|---|
+| Browser → API | Session cookie plus CSRF proof on writes | Password after login; API keys in dashboard markup |
+| Worker → API | A scoped credential, worker id and lease token | Authority to complete a task whose lease moved elsewhere |
+| Definition → runner | Destination **name** and task input | Database URLs, broker credentials, SMTP passwords |
+| Store → task | A resolved secret value in memory | Plaintext in task input, history, search or API responses |
+| Namespace → namespace | Platform administration only | Definitions, runs, credentials or ordinary principals |
+
+## Identity: choose one mechanism per caller
+
+### Human sessions
+
+Email/password, OIDC SSO and SAML SSO all end in a server-side session row. The
+browser receives an `HttpOnly` session cookie and a separate CSRF cookie. A
+state-changing request must send the CSRF value back in `X-CSRF-Token`.
+
+Why two tokens? `HttpOnly` protects the session token from JavaScript, while
+the readable CSRF token proves that the caller is code running on the intended
+origin rather than a cross-site form submission. `SameSite` is defence in
+depth, not the only check.
+
+Sessions can be revoked individually or all at once. Passwords are hashes, not
+reversible credentials. OIDC and SAML provision the account on first sign-in;
+they do **not** silently grant groups or administrator scopes.
+
+### API keys
+
+API keys begin with `nf_` and are shown once. The database stores a hash, so
+there is no endpoint that can recover a lost key. Use them for scripts and
+systems that cannot perform a token exchange.
+
+```bash
+curl -H "Authorization: Bearer $NF_API_KEY" \
+  http://localhost:3000/v1/auth/whoami
+```
+
+Create separate keys for separate deployments. Scope a worker to queue access;
+do not hand it `admin` because doing so is convenient during development.
+
+### Service accounts
+
+A service account has a client id and secret. Exchange those for a short-lived
+JWT at `POST /v1/auth/token`; send the access token as a bearer token. Rotating
+or deleting the service account stops the next exchange without requiring a
+long-lived token in every client.
+
+### Workload identity
+
+OIDC workload identity maps an external issuer, audience and subject to a
+node-flow principal. mTLS maps the verified certificate identity. Both remove
+stored application secrets, but neither grants authority by itself: the
+binding still names the scopes and namespace.
+
+<Callout type="info">
+  `NODE_FLOW_OIDC_ISSUERS` is for machines presenting an existing token.
+  `NODE_FLOW_SSO_PROVIDERS` is for humans completing a browser flow. They are
+  intentionally separate configuration surfaces.
+</Callout>
+
+## Authorization: scopes, grants and tags
+
+Authorization is evaluated after authentication and namespace resolution.
+
+1. The principal must belong to the namespace, unless it is a platform
+   administrator using a platform-only endpoint.
+2. A matching scope must allow the operation. `executions:read` and
+   `executions:start` are different capabilities.
+3. If the credential has resource grants, the operation must match one.
+4. If a resource is tagged and tag grants are in use, the caller must match the
+   resource's tags.
+
+Groups collect scopes and tag grants for human users. Resource grants are the
+narrower tool for machine credentials—for example, one service account may
+start `invoice_*` workflows but not modify their definitions.
+
+Denials are deliberate. Do not turn a `403` into a broader key until
+`GET /v1/auth/whoami` shows which identity, namespace and scopes the server
+actually resolved.
+
+## Namespace isolation
+
+Nearly every API path contains `/ns/{namespace}`. The credential also belongs
+to a namespace, and the two must agree. A namespace is the tenant boundary for:
+
+- workflow and task definitions;
+- executions, task payloads and logs;
+- secrets, environment values and integrations;
+- users, groups, keys and service accounts;
+- schedules, event handlers, forms, schemas and saved views;
+- quotas, audit records and AI indexes.
+
+The Conductor compatibility paths do not contain a namespace, so the credential
+supplies it. This is why sharing one compatibility credential between tenants
+is not supported.
+
+## Secrets are sealed, not redacted
+
+`NODE_FLOW_SECRET_KEYS` is a comma-separated key ring in `id:base64key` form.
+The first key seals new values; all keys may open existing values. This enables
+rotation without a flag day:
+
+```bash
+# 1. Add the new key first. Keep the old key second while data is re-sealed.
+NODE_FLOW_SECRET_KEYS='2026-09:BASE64_NEW,2026-03:BASE64_OLD'
+
+# 2. Rotate stored ciphertext through the API or operator workflow.
+# 3. Remove the old key only after every value names the new key id.
+```
+
+Without a key ring, the server refuses to store a secret. It does not fall back
+to plaintext. Reads list metadata, never values. Resolution happens when a
+system task executes, and the resolved value is not written into task input,
+output, history or logs.
+
+Back up the key ring separately from Postgres. A database backup without the
+key is intentionally insufficient to recover secrets; losing every key is also
+irrecoverable.
+
+## Outbound network and destination controls
+
+The `HTTP` task blocks loopback, link-local and private destinations by default,
+including redirects that land on one. This prevents a workflow from reaching
+cloud instance metadata or an internal control plane.
+
+- Prefer `NODE_FLOW_HTTP_ALLOWED_HOSTS` for narrow exceptions.
+- Set `NODE_FLOW_HTTP_ALLOW_PRIVATE=true` only when every workflow author is
+  trusted to reach the private network visible to the server.
+- Apply an egress policy at the container or cluster boundary as a second
+  layer. Application URL checks do not replace a network policy.
+
+SQL, gRPC, SMTP, brokers and AI providers use named operator configuration.
+The workflow supplies `datasource: "reporting"`, not a connection string. The
+same rule prevents credentials appearing in definitions and prevents an author
+from choosing a destination behind the server's network perimeter.
+
+## Webhooks and replay resistance
+
+Inbound workflow webhooks use an unguessable token in the URL as authority.
+Treat the whole URL as a secret: do not put it in public issue trackers or
+analytics. Where a webhook verifier is configured, verify the provider's
+signature as well.
+
+Outbound `WEBHOOK` calls are signed and go through the transactional outbox.
+The receiver should:
+
+1. verify the signature before parsing privileged fields;
+2. reject timestamps outside its replay window;
+3. deduplicate using the delivery or execution identifier;
+4. return success only after its own durable commit.
+
+Workers have a similar replay control: the lease token is a fencing token. A
+result from an expired lease is rejected even when the task id is valid.
+
+## Production hardening checklist
+
+<Steps>
+
+<Step>
+
+### Establish identity
+
+- Generate a unique `NODE_FLOW_JWT_SECRET` of at least 32 random characters.
+- Leave `NODE_FLOW_SEED_PASSWORD` unset so the first password is generated and
+  logged once; rotate it immediately. Then set `NODE_FLOW_SEED=false` where
+  identity is fully managed elsewhere.
+- Prefer OIDC or mTLS workload bindings over shared API keys.
+- Give each workload its own credential and minimum scopes.
+
+</Step>
+
+<Step>
+
+### Protect data
+
+- Configure a recoverable, separately backed-up `NODE_FLOW_SECRET_KEYS` ring.
+- Require TLS to managed Postgres and verify its CA.
+- Use S3 with an instance role or workload identity for multi-node payloads.
+- Encrypt database, object-store and backup volumes at rest.
+- Set retention appropriate to the personal data carried in task inputs and
+  outputs.
+
+</Step>
+
+<Step>
+
+### Constrain the network
+
+- Terminate TLS at a trusted proxy and configure forwarded headers narrowly.
+- Keep private HTTP access off; allow individual hosts where needed.
+- Apply ingress and egress network policy to each role.
+- Do not expose Postgres, metrics or health detail publicly.
+- Keep gateway CORS origins exact; an empty list is the safest default.
+
+</Step>
+
+<Step>
+
+### Make changes observable
+
+- Export the audit log and alert on identity, secret, permission and
+  integration changes.
+- Alert on repeated `401`, `403`, signature failures and stale lease reports.
+- Keep trace export scrubbed: task payloads can contain customer data even
+  when secrets are sealed correctly.
+- Rehearse key rotation and credential revocation before an incident.
+
+</Step>
+
+</Steps>
+
+## If a credential is exposed
+
+| Credential | Immediate action | Follow-up |
+|---|---|---|
+| API key | Delete the key | Issue a replacement with narrower scopes; inspect audit and access logs |
+| Service-account secret | Delete or rotate the account | Existing JWTs live until their short TTL; rotate the JWT signing secret only if every token must die immediately |
+| Human password | Reset it and revoke all sessions | Review group membership, SSO state and audit events |
+| Session cookie | Revoke that session or all sessions | Investigate browser and proxy logs; session expiry alone may be too slow |
+| Secret master key | Add a new first key and re-seal immediately | Retire the old key after verification; assume copied database ciphertext is exposed |
+| Webhook URL | Replace the webhook token | Reject old deliveries and review receiver deduplication |
+
+Security controls are only useful when the refusal is visible. Preserve the
+error code, request id, principal id and audit event when investigating; avoid
+copying raw credentials or task payloads into a ticket.
+
+## Next
+
+- [Configuration](/docs/guide/configuration) lists every security-related
+  environment variable and its exact shape.
+- [Self-hosting](/docs/guide/self-hosting) covers TLS, backups, health and
+  production topology.
+- [The REST API](/docs/guide/api) explains authentication headers, scopes and
+  grants with requests.

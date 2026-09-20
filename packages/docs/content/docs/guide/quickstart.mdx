@@ -1,0 +1,480 @@
+---
+title: Quickstart
+description: From nothing to a completed workflow run, with a worker, in about a minute.
+---
+
+This walks from an empty directory to a workflow that has run, with a worker of
+your own doing one of its steps. Everything here is verified against the same
+image the release pipeline ships.
+
+<Callout type="info">
+  There is no `nf bootstrap` step any more. The server **seeds a namespace and
+  an administrator on its first boot** against an empty database, so starting it
+  is all it takes to have a working install.
+</Callout>
+
+## 1. Start the stack
+
+<Steps>
+
+<Step>
+
+### Bring up Postgres, the engine and the dashboard
+
+From a checkout of the repository:
+
+```bash
+docker compose -f docker/docker-compose.yml up
+```
+
+That starts three containers:
+
+<Files>
+  <Folder name="node-flow (compose project)" defaultOpen>
+    <File name="node-flow-postgres — postgres:18-alpine, published on host port 5433" />
+    <File name="node-flow-server — the engine, api + decider + poller, on 3000" />
+    <File name="node-flow-ui — the dashboard, on 3100" />
+  </Folder>
+</Files>
+
+The database is published on **5433**, not 5432, so a Postgres you already run
+keeps its port. Set `NODE_FLOW_POSTGRES_PORT` to move it. Nothing inside the
+compose network is affected either way — the services reach each other on 5432
+over the bridge.
+
+If you only want the published images and not this repository, see
+[Self-hosting → Docker Compose without this codebase](/docs/guide/self-hosting#docker-compose-without-this-codebase).
+
+</Step>
+
+<Step>
+
+### Sign in
+
+Open the dashboard at `http://localhost:3100`:
+
+```
+email     you@example.com
+password  development-password
+```
+
+Those credentials come from `docker/docker-compose.yml` and exist to make this
+page copy-pasteable:
+
+```yaml
+NODE_FLOW_SEED_EMAIL: you@example.com
+NODE_FLOW_SEED_PASSWORD: development-password
+```
+
+<Callout type="warn">
+  **Anywhere real, leave `NODE_FLOW_SEED_PASSWORD` unset.** The server then
+  generates 160 bits of entropy per install and prints it once, as a block, at
+  boot:
+
+  ```
+  ┌─────────────────────────────────────────────────────────────┐
+  │  node-flow created your first administrator.                │
+  │  This password is shown once and is not recoverable.        │
+  └─────────────────────────────────────────────────────────────┘
+
+    namespace   default
+    email       admin@node-flow.dev
+    password    fQ3n8Zk1wRr7Tb0xLpYv
+  ```
+
+  Seeding acts only when the database contains **no namespaces at all**, so it
+  happens once in the lifetime of a database and every later boot is one
+  `SELECT` that does nothing. Set `NODE_FLOW_SEED=false` to turn it off entirely
+  — the right choice where accounts come from an identity provider.
+</Callout>
+
+</Step>
+
+<Step>
+
+### Mint an API key
+
+The dashboard is one way in; everything below uses the API, which needs a
+credential of its own. The easiest route is **Admin → API keys** in the
+dashboard. Over HTTP it is a login followed by a key request:
+
+```bash
+# Log in, keeping the session and CSRF cookies in a jar.
+curl -s -c jar -X POST http://localhost:3000/v1/ns/default/users/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"development-password"}'
+
+# Mint the key. Writes need the CSRF header, whose value is the nf_csrf cookie.
+curl -s -b jar -c jar -X POST http://localhost:3000/v1/auth/api-keys \
+  -H 'content-type: application/json' \
+  -H "x-csrf-token: $(awk '$6=="nf_csrf" {print $7}' jar)" \
+  -d '{"name":"quickstart","scopes":["admin"]}'
+```
+
+```json
+{
+  "id": "0193c0f1-…",
+  "prefix": "nf_abcd",
+  "token": "nf_abcd…",
+  "warning": "the token is shown once and cannot be recovered"
+}
+```
+
+The token is shown **once**. Keep it:
+
+```bash
+export NF_API_KEY=nf_...
+export NF_URL=http://localhost:3000
+export NF_NAMESPACE=default
+
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/auth/whoami"
+# { "type": "SERVICE_ACCOUNT", "id": "…", "name": "quickstart",
+#   "namespaceId": "…", "scopes": ["admin"] }
+```
+
+<Callout type="info">
+  `nf bootstrap --namespace default` does the same thing against Postgres
+  directly, which is handy in CI where there is no browser. It is no longer part
+  of the normal install — the server seeds its own first account.
+</Callout>
+
+</Step>
+
+</Steps>
+
+## 2. Register a workflow
+
+Save this as `greet.json`. It has one server-run step (`INLINE`, a sandboxed
+JavaScript snippet) and one step of yours (`SIMPLE`, which a worker will do).
+
+```json title="greet.json"
+{
+  "name": "greet",
+  "version": 1,
+  "description": "Says hello, then asks a worker to shout it.",
+  "inputParameters": ["name"],
+  "tasks": [
+    {
+      "name": "compose",
+      "taskReferenceName": "compose",
+      "type": "INLINE",
+      "inputParameters": {
+        "expression": "return { greeting: 'hello ' + $.who };",
+        "who": "${workflow.input.name}"
+      }
+    },
+    {
+      "name": "shout",
+      "taskReferenceName": "shout",
+      "type": "SIMPLE",
+      "inputParameters": { "text": "${compose.output.greeting}" }
+    }
+  ],
+  "outputParameters": { "message": "${shout.output.shouted}" }
+}
+```
+
+<Mermaid
+  title="greet v1"
+  chart={`
+flowchart LR
+  START(( )) --> COMPOSE[compose<br/>INLINE, server-run]
+  COMPOSE --> SHOUT[shout<br/>SIMPLE, your worker]
+  SHOUT --> END((( )))
+`}
+/>
+
+Register it:
+
+<Tabs items={['curl', 'nf CLI', 'TypeScript SDK']}>
+
+<Tab value="curl">
+
+```bash
+curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/metadata/workflows" \
+  -H "x-api-key: $NF_API_KEY" \
+  -H 'content-type: application/json' \
+  --data @greet.json
+```
+
+</Tab>
+
+<Tab value="nf CLI">
+
+```bash
+# nf is not on npm in 1.0 — run it from a clone of the repo
+pnpm nf workflows register greet.json
+```
+
+`nf` reads `NF_URL`, `NF_API_KEY` and `NF_NAMESPACE` from the environment, or
+takes `--url`, `--api-key` and `--namespace`.
+
+</Tab>
+
+<Tab value="TypeScript SDK">
+
+```ts title="register.ts"
+import { NodeFlowClient } from '@node-flow-dev/sdk';
+import definition from './greet.json' with { type: 'json' };
+
+const client = new NodeFlowClient({
+  baseUrl: 'http://localhost:3000',
+  namespace: 'default',
+  apiKey: process.env.NF_API_KEY,
+});
+
+console.log(await client.registerWorkflow(definition));
+```
+
+<Callout type="warn">
+  `baseUrl` is the **origin**, not the versioned path. The client appends `/v1`
+  itself, so `http://localhost:3000` is right and `http://localhost:3000/v1`
+  produces requests to `/v1/v1/...`.
+</Callout>
+
+</Tab>
+
+</Tabs>
+
+## 3. Write the worker
+
+`shout` is a `SIMPLE` task, which means nothing will run it until a process
+leases it. That process is yours.
+
+<Tabs items={['TypeScript SDK', 'Plain REST (any language)']}>
+
+<Tab value="TypeScript SDK">
+
+```bash
+npm install @node-flow-dev/sdk
+```
+
+```ts title="worker.ts"
+import { NodeFlowClient, Worker } from '@node-flow-dev/sdk';
+
+const client = new NodeFlowClient({
+  baseUrl: 'http://localhost:3000',
+  namespace: 'default',
+  apiKey: process.env.NF_API_KEY,
+});
+
+const worker = new Worker({
+  client,
+  // The queue is the task definition name — `name`, not `taskReferenceName`.
+  queue: 'shout',
+  concurrency: 4,
+  waitSeconds: 30,
+  handler: async ({ input, log }) => {
+    log(`shouting: ${input['text']}`);
+    return { shouted: String(input['text']).toUpperCase() };
+  },
+  onError: (error) => console.error(error),
+});
+
+worker.start();
+
+// Drain in-flight tasks on shutdown instead of abandoning their leases.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => void worker.stop().then(() => process.exit(0)));
+}
+```
+
+```bash
+# Node 24 strips types natively, so no build step is needed.
+node worker.ts
+```
+
+</Tab>
+
+<Tab value="Plain REST (any language)">
+
+There is no SDK requirement. A worker is any process that can do three HTTP
+calls. This is the whole protocol:
+
+```bash
+# 1. Lease. waitSeconds parks the request until work appears (long poll).
+LEASED=$(curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/queues/shout/lease" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"workerId":"shell-1","count":1,"waitSeconds":30,"leaseSeconds":60}')
+
+TASK_ID=$(echo "$LEASED"  | jq -r '.tasks[0].taskId')
+WF_ID=$(echo "$LEASED"    | jq -r '.tasks[0].workflowId')
+TOKEN=$(echo "$LEASED"    | jq -r '.tasks[0].leaseToken')
+TEXT=$(echo "$LEASED"     | jq -r '.tasks[0].input.text')
+
+# 2. (Optional) heartbeat, if the work may outlive leaseSeconds.
+curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/tasks/$TASK_ID/heartbeat" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d "{\"queueName\":\"shout\",\"leaseToken\":\"$TOKEN\",\"leaseSeconds\":60}"
+
+# 3. Report. The lease token is the fencing token: a worker whose lease expired
+#    cannot write over whoever holds the task now.
+curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/tasks/$TASK_ID/report" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d "{\"queueName\":\"shout\",\"workflowId\":\"$WF_ID\",\"leaseToken\":\"$TOKEN\",\"status\":\"COMPLETED\",\"output\":{\"shouted\":\"$(echo "$TEXT" | tr a-z A-Z)\"}}"
+```
+
+</Tab>
+
+</Tabs>
+
+## 4. Run it
+
+<Tabs items={['nf CLI', 'curl', 'TypeScript SDK']}>
+
+<Tab value="nf CLI">
+
+```bash
+nf run greet --input '{"name":"ada"}' --wait 30
+```
+
+```
+0a1f...  COMPLETED
+{
+  "message": "HELLO ADA"
+}
+```
+
+The exit code is scriptable: `0` completed, `1` finished but not `COMPLETED`,
+`2` still running when the wait elapsed.
+
+</Tab>
+
+<Tab value="curl">
+
+Start and wait for the answer in one call:
+
+```bash
+curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/executions/greet/execute" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"input":{"name":"ada"},"waitForSeconds":30}'
+```
+
+```json
+{
+  "workflowId": "0193c0f1-...",
+  "reached": true,
+  "status": "COMPLETED",
+  "output": { "message": "HELLO ADA" }
+}
+```
+
+Or start it and get a receipt:
+
+```bash
+curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/executions/greet" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"input":{"name":"ada"}}'
+```
+
+```json
+{ "workflowId": "0193c0f1-...", "status": "RUNNING", "defName": "greet", "defVersion": 1 }
+```
+
+</Tab>
+
+<Tab value="TypeScript SDK">
+
+```ts
+const { workflowId } = await client.startWorkflow({
+  name: 'greet',
+  input: { name: 'ada' },
+  idempotencyKey: 'greet-ada-1',
+});
+
+console.log(await client.executionStatus(workflowId));
+```
+
+</Tab>
+
+</Tabs>
+
+## 5. Watch it
+
+```bash
+nf tail 0193c0f1-...
+```
+
+```
+14:22:07  compose                  COMPLETED
+14:22:07  shout                    SCHEDULED
+14:22:08  shout                    IN_PROGRESS
+14:22:08  shout                    COMPLETED
+── workflow COMPLETED
+```
+
+Or read the whole run, tasks included:
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" \
+  "$NF_URL/v1/ns/$NF_NAMESPACE/executions/0193c0f1-..." | jq
+```
+
+Or open it in the dashboard, which follows the run over server-sent events at
+`/v1/ns/default/executions/{id}/stream` and needs no polling.
+
+## 6. Test it without a server
+
+This is the part that most changes how it feels to work on workflows. `nf test`
+runs a definition through the **real engine** in memory — same decider, same
+expression resolution, same retry semantics — with external work mocked.
+
+```json title="greet.test.json"
+{
+  "definition": {
+    "name": "greet",
+    "version": 1,
+    "inputParameters": ["name"],
+    "tasks": [
+      {
+        "name": "compose",
+        "taskReferenceName": "compose",
+        "type": "INLINE",
+        "inputParameters": {
+          "expression": "return { greeting: 'hello ' + $.who };",
+          "who": "${workflow.input.name}"
+        }
+      },
+      {
+        "name": "shout",
+        "taskReferenceName": "shout",
+        "type": "SIMPLE",
+        "inputParameters": { "text": "${compose.output.greeting}" }
+      }
+    ],
+    "outputParameters": { "message": "${shout.output.shouted}" }
+  },
+  "input": { "name": "ada" },
+  "mocks": {
+    "compose": { "output": { "greeting": "hello ada" } },
+    "shout": { "output": { "shouted": "HELLO ADA" } }
+  },
+  "expect": {
+    "status": "COMPLETED",
+    "output": { "message": "HELLO ADA" },
+    "tasks": { "shout": "COMPLETED" }
+  }
+}
+```
+
+```bash
+nf test greet.test.json
+```
+
+```
+✓ greet.test.json  COMPLETED  7 ms
+
+1 passed, 0 failed
+```
+
+Exit code 1 on any failed expectation, so it drops straight into CI. See
+[CLI → nf test](/docs/guide/cli#nf-test) for the full file format.
+
+## What to read next
+
+- [Concepts](/docs/guide/concepts) — what a reference name is, why queues are named
+  after task definitions, and how `${...}` resolves.
+- [Workflows](/docs/guide/workflows) — branching, parallelism, loops, sub-workflows,
+  compensation.
+- [Workers](/docs/guide/workers) — leases, heartbeats, idempotency, domains.
+- [Self-hosting](/docs/guide/self-hosting) — doing this somewhere that matters.

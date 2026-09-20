@@ -1,0 +1,42 @@
+{
+  "name": "@node-flow-dev/bench",
+  "version": "1.0.0",
+  "license": "LicenseRef-node-flow-1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "@node-flow-dev/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./bin": {
+      "@node-flow-dev/source": "./src/bin.ts",
+      "import": "./dist/bin.js",
+      "default": "./dist/bin.js"
+    }
+  },
+  "nx": {
+    "name": "bench",
+    "tags": [
+      "scope:app",
+      "type:tooling"
+    ]
+  },
+  "bin": {
+    "nf-bench": "./dist/bin.js"
+  },
+  "dependencies": {
+    "@node-flow-dev/sdk": "workspace:*",
+    "pg": "^8.23.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  }
+}

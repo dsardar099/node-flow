@@ -1,0 +1,309 @@
+---
+title: Working on node-flow
+description: Getting the workspace running, and the rules a change has to satisfy before it lands.
+---
+
+These pages are for people changing node-flow. If you are *using* it, the
+[Guide](/docs/guide) is the one you want.
+
+They are written to be read before you touch the engine, and they are written
+for language models as much as for people. Most of what follows is not a
+description of structure — structure you can read off the filesystem. It is the
+set of constraints that are load-bearing, and the specific failure each one
+prevents. Nearly every constraint here exists because something silently broke
+once, in production or in a release rehearsal, and the reason is recorded next
+to the rule so a future reader does not remove something that looks redundant.
+
+<Callout type="warn">
+  The single most common failure in this codebase is **silent**: a setting that
+  is accepted, validated, stored and then ignored; a workflow that hangs at
+  `RUNNING` with nothing to act on; a check that opens when its precondition is
+  missing. Almost nothing here fails loudly on its own. That is why the rules
+  below are rules rather than preferences.
+</Callout>
+
+## Prerequisites
+
+| | |
+|---|---|
+| **Node 24** | `24.19.0`, pinned in `.nvmrc`. Node 20 is EOL; the root `package.json` declares `"node": ">=24"`. |
+| **pnpm 11.5.1** | Declared in `packageManager`. Corepack will pick it up. |
+| **Docker** | Postgres 18 for the stack, and Testcontainers for the `store` and `server` suites. OrbStack, Colima and Rancher Desktop all work — the harness detects the socket rather than assuming `/var/run/docker.sock`. |
+
+Postgres 18 specifically. `uuidv7()` and partitioning are not optional niceties
+here, and `assertDatabaseCapabilities` in
+`packages/store/src/lib/database.ts` refuses to start against anything older
+than `server_version_num` 180000.
+
+## Setting up
+
+<Steps>
+
+<Step>
+
+### Install
+
+```bash
+nvm use 24
+pnpm install
+```
+
+CI uses `pnpm install --frozen-lockfile`; the lockfile is committed and
+reproducible.
+
+</Step>
+
+<Step>
+
+### Start Postgres, or the whole stack
+
+```bash
+# everything: Postgres, the server, the dashboard
+docker compose -f docker/docker-compose.yml up
+
+# or just the database, which is all the test suites need
+pnpm db:up
+```
+
+</Step>
+
+<Step>
+
+### Use the seeded development administrator
+
+```bash
+# The repository compose file sets these development-only values.
+# Open http://localhost:3100 and sign in with:
+#   you@example.com / development-password
+```
+
+</Step>
+
+<Step>
+
+### Check it
+
+```bash
+pnpm nx run-many -t build test lint typecheck
+```
+
+</Step>
+
+</Steps>
+
+Compose publishes Postgres on **5433**, not 5432, and that is deliberate. A
+developer machine very often already runs Postgres on 5432; Docker binds the
+port anyway rather than reporting a conflict, and host tools then silently reach
+the *other* server — which surfaces as `password authentication failed for user
+"nodeflow"`, a message that sends you looking at credentials instead of at the
+port. Nothing inside the compose network is affected: the services reach each
+other on 5432 over the bridge.
+
+On an empty database the server seeds a namespace and administrator. The
+compose file pins development credentials so this checkout is copy-pasteable;
+a real deployment should leave `NODE_FLOW_SEED_PASSWORD` unset, receive a
+unique generated password once in the server log, rotate it, and disable seed
+once identity is managed elsewhere.
+
+`nf bootstrap` still connects to Postgres directly and remains useful for CI,
+recovery, and scripted tenant creation. It is idempotent on the namespace and
+**deliberately not on the credential** — the first key is unrecoverable by
+design, so "I lost it" is the usual reason to run it again.
+
+## Running things
+
+<Callout type="info">
+  Always run tasks through Nx, and always prefix with the workspace package
+  manager: `pnpm nx build store`, not a globally installed `nx` and not the
+  underlying tool. `nx test` rebuilds dependencies first; running `npx vitest`
+  directly does not, and the difference is not cosmetic — see the stale-build
+  trap below.
+</Callout>
+
+```bash
+pnpm nx run-many -t build test lint typecheck    # everything
+pnpm nx test engine                               # one project
+pnpm nx run-many -t test --skip-nx-cache          # ignore the Nx cache
+```
+
+The engine suite is pure and runs in milliseconds, which is the point of keeping
+it pure — it is worth re-running on every edit. The `store` and `server` suites
+start real Postgres containers and take longer.
+
+After adding a dependency from one workspace package to another, run
+**`pnpm nx sync`**. It writes the TypeScript project reference; without it the
+build fails with an out-of-sync error that does not obviously name the cause.
+
+## The two verification gates
+
+The test suites read the *source*. A release ships an *artefact*, and the gap
+between the two is where defects survive a green build. So there are two more
+gates, and neither imports a line of this repository.
+
+<Mermaid
+  title="What each gate can see"
+  chart={`
+flowchart LR
+  subgraph S["Source"]
+    U["Unit + integration suites<br/>vitest, testcontainers"]
+  end
+  subgraph A["Artefact"]
+    SM["scripts/smoke.mjs<br/>48 checks, over HTTP"]
+    E2["scripts/e2e/<br/>266 checks, feature by feature"]
+  end
+  U -->|"cannot see"| B1["webpack externals<br/>bundle contents"]
+  U -->|"cannot see"| B2["readiness vs shipped migrations"]
+  U -->|"cannot see"| B3["DI wiring the container does"]
+  SM --> B1
+  SM --> B2
+  E2 --> B3
+`}
+/>
+
+```bash
+# gate one: is the built image wired up at all?
+docker compose -f docker/docker-compose.yml up -d
+export DATABASE_URL=postgres://nodeflow:nodeflow@localhost:5433/nodeflow
+pnpm nf bootstrap --namespace default --json     # gives you a token
+KEY=nf_... pnpm smoke
+
+# gate two: does each feature behave?
+KEY=nf_... pnpm e2e              # everything
+KEY=nf_... pnpm e2e operators    # or one section
+```
+
+`scripts/smoke.mjs` is the release gate: 48 checks, a few minutes, run on every
+tag by `.github/workflows/release.yml`. Every bug it caught before 1.0.0 was
+invisible to `build test lint typecheck` — a module webpack left out of the
+bundle so the container died on boot with `Cannot find module 'tslib'`, a
+readiness probe that passed against a schema one migration behind the binary, a
+409 reported as a 400, and a `${workflow.variables.x}` that resolved to `null`
+rather than raising.
+
+`scripts/e2e/` is 266 checks across eleven sections, driving each feature against
+the same image. It found five defects in the decider that the engine's own
+tests structurally could not. [Testing](/docs/contributing/testing) explains
+why, and it is the most important thing on that page.
+
+Some e2e sections need the stack configured beyond its defaults — the `tasks`
+section needs `NODE_FLOW_HTTP_ALLOW_PRIVATE=true` because the SSRF guard
+correctly refuses an echo server on localhost, and `brokers` needs real Redis,
+NATS, RabbitMQ and Kafka. The header comment in `scripts/e2e/index.mjs` lists
+each one with the exact commands.
+
+## What a change has to satisfy
+
+Not a style guide. Each of these is a constraint whose violation has produced a
+real defect, and each is enforced by something other than review.
+
+<Callout type="warn">
+  **The purity boundary.** `core` and `engine` are tagged `scope:pure` and may
+  import nothing but each other. No NestJS, no `pg`, no `undici`, no `react`.
+  This is what makes deterministic replay, the testkit, time travel and a
+  millisecond test suite possible, and it is the first thing that erodes under
+  delivery pressure. Enforced twice — by
+  `@nx/enforce-module-boundaries` in `eslint.config.mjs`, and by module
+  resolution under pnpm's isolated layout. Never waive either.
+</Callout>
+
+- **Transactions are explicit.** Repositories take a `tx` parameter. There is no
+  ambient transaction, no `AsyncLocalStorage`, no `nestjs-cls`. In an
+  orchestrator, which statements commit together *is* the design; making that
+  invisible is how unreproducible bugs get written.
+- **Raw SQL never leaves `packages/store/`.** Every identifier in it is
+  double-quoted, because Postgres folds unquoted identifiers to lowercase and
+  this codebase uses PascalCase tables and camelCase columns. See
+  [Data model](/docs/contributing/data-model).
+- **Relative imports carry `.js`.** The workspace is `"module": "nodenext"`;
+  a missing extension is a resolution failure, not a warning.
+- **Declare every runtime dependency in the package that uses it, never at the
+  workspace root.** Module resolution walks *up* the tree, so a root-level
+  dependency is reachable from every package regardless of package manager —
+  which silently disables the second line of defence for the purity boundary
+  across the whole workspace.
+- **Every bug fix ships with a test that fails when the fix is reverted.** Not a
+  test that passes with the fix: one that has been *seen to fail* without it.
+  Three separate times in this project a property test survived the removal of
+  the mechanism it was named after. A property test that has never been seen to
+  fail has not been shown to test anything.
+- **No clock- or timezone-dependent value may be rendered as JSX text.** Use
+  `<Ago>` or `<LocalTime>`. `packages/ui/specs/no-clock-in-markup.spec.ts`
+  scans the source and fails on a violation.
+- **A setting that is accepted and ignored is worse than a missing feature.** If
+  you add a field to the DSL, wire it all the way through — and check that
+  `upsertTaskDefinition` and friends, which name their columns explicitly, name
+  yours too. `secretOutputFields` passed validation, was returned by the API,
+  and was dropped on write.
+
+## Traps that will cost you an afternoon
+
+These are recorded because each one produced a confident, wrong conclusion.
+
+**A stale build reports success.** `npx vitest` run directly resolves workspace
+imports through the `import` condition, loading each dependency's built
+`dist/`. `nx test` rebuilds dependencies first. The two silently disagree, and a
+fix that appears not to work may in fact have landed. Every `vitest.config.mts`
+now sets `resolve.conditions: ['@node-flow-dev/source']` so both paths run the
+same code — if you add a project, it needs that line too.
+
+**A stale `.tsbuildinfo` hides a real error.** `nx typecheck --skip-nx-cache`
+skips *Nx's* cache, not TypeScript's own incremental state. When you are
+verifying that something *should* fail — a boundary probe, a mutation — delete
+`dist/` and `*.tsbuildinfo` first, or you will confirm the wrong conclusion.
+
+**A build that half-succeeds is worse than one that fails.** A failed
+`tasks:build` once left an older `dist/` in place, and the server bundled that.
+The symptom looked exactly like a task-registration bug and was not. If you
+grep build output for failures, grep for the failure strings too, not only for
+`Successfully`.
+
+**A mutation that does not apply is indistinguishable from one that survives**,
+and it argues for the opposite conclusion. Before believing what a surviving
+mutant tells you, verify the mutant actually changed what you meant it to
+change — and that it still compiles, because a mutation that breaks the build
+means the tests never ran.
+
+**A flaky test is a race condition, or a quantisation error, that has not been
+diagnosed yet.** Both flakes found in this project were an assertion whose
+margin was smaller than the quantisation of what it measured. Neither was fixed
+by retrying.
+
+## Where to go next
+
+<Cards>
+  <Card
+    title="Architecture"
+    href="/docs/contributing/architecture"
+    description="Process topology, the monorepo, request flow and the data model in outline."
+  />
+  <Card
+    title="The engine"
+    href="/docs/contributing/engine"
+    description="The pure decider: blueprints, static ref analysis, and how each operator is implemented."
+  />
+  <Card
+    title="Correctness"
+    href="/docs/contributing/correctness"
+    description="The invariants that must never be broken. Read this one before changing the evaluator."
+  />
+  <Card
+    title="Data model"
+    href="/docs/contributing/data-model"
+    description="Every table, why it is partitioned that way, and the Postgres 18 requirements."
+  />
+  <Card
+    title="Testing"
+    href="/docs/contributing/testing"
+    description="The layers, the two gates, and why a test that supplies broken state cannot fail."
+  />
+  <Card
+    title="Conventions"
+    href="/docs/contributing/conventions"
+    description="Module boundaries, the source export condition, and the rules that are enforced by tests."
+  />
+  <Card
+    title="Releasing"
+    href="/docs/contributing/releasing"
+    description="Tag-triggered, verify then smoke then publish, with a dry run."
+  />
+</Cards>

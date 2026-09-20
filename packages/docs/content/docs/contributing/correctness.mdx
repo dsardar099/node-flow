@@ -1,0 +1,501 @@
+---
+title: Correctness
+description: The invariants that must never be broken, the failure each one prevents, and how to tell you are about to break one.
+---
+
+This is the page to read before changing the evaluator, the queue, the outbox or
+anything that writes to `DecideQueues`.
+
+An orchestrator's failures are almost never exceptions. They are a workflow that
+sits at `RUNNING` forever with every task terminal and nothing left to wake it;
+a permit that leaks until nothing runs; a lease that expires into two attempts
+both claiming one result; a task input that silently resolves to `null` and
+sends the run down the wrong branch. None of these throw. Most of them are
+invisible in a test that constructs its own state.
+
+Every invariant below exists because one of those happened.
+
+<Callout type="warn">
+  **The worst failure this system has is a workflow stuck forever with nothing
+  to act on.** Two of the four engine defects found by driving every feature
+  against the built image were exactly that. When a change makes an ambiguous
+  case possible, resolve it toward doing *more* work, never less.
+</Callout>
+
+## The invariants
+
+| # | Invariant | If it breaks |
+|---|---|---|
+| 1 | **Claim the decide request before reading any state**, in the same transaction | A completion lands in the gap, is swallowed by dedupe, and no further wakeup ever comes |
+| 2 | **`DecideQueues` enqueue uses `ON CONFLICT DO UPDATE`** | `DO NOTHING` takes no lock, so a claim can read past an uncommitted completion |
+| 3 | **Redundant evaluations are free; lost evaluations are fatal** | Any optimisation that skips a pass can strand a run |
+| 4 | **One decider per workflow, by `SELECT … FOR UPDATE`** | Two deciders interleave and schedule the same work twice, or terminate a run mid-schedule |
+| 5 | **No side effect inside a transaction. Everything outbound goes through the outbox** | A crash mid-evaluation publishes something a rollback then un-does, or loses something a commit implied |
+| 6 | **Task identity is `(workflowId, refName, iteration, attempt)`** | Evaluation stops being idempotent, and invariant 3 stops being safe |
+| 7 | **Every write by a lease holder is fenced on its `leaseToken`** | A worker whose lease expired overwrites the attempt that replaced it |
+| 8 | **Correctness decisions never involve a clock** | Skew, or Postgres `now()` being transaction-start, makes completions invisible |
+| 9 | **A check-then-write across transactions needs an advisory lock, not just a shared transaction** | Two `READ COMMITTED` transactions both read the same count and both proceed |
+
+## 1 and 2. The lost-wakeup race
+
+This is the defining race of the system. Read
+`packages/store/src/lib/decide-queue.repository.ts` alongside this section.
+
+`DecideQueues` has one row per workflow awaiting a pass, and the primary key on
+`workflowId` **is** the dedupe — a burst of task completions collapses into a
+single pending evaluation. Dedupe plus concurrency creates a specific silent
+failure.
+
+<Mermaid
+  title="The race, with the claim taken after the read"
+  chart={`
+sequenceDiagram
+  participant A as Branch A completes
+  participant Q as DecideQueues
+  participant D as Decider
+  participant C as Branch C completes
+  A->>Q: insert row for wf
+  D->>Q: read pending frontier
+  Note over D: sees A, not C
+  C->>Q: insert — row still exists, no-op
+  Note over C: C earned no evaluation
+  D->>Q: DELETE the row
+  Note over D,Q: queue is now empty
+  Note over D: pass ends having never seen C<br/>no further wakeup ever comes
+`}
+/>
+
+**The rule: claim the decide request before reading any state.**
+
+1. `DELETE FROM "DecideQueues" WHERE "workflowId" = $1`
+2. *then* read the workflow and its task frontier
+3. evaluate, apply, commit
+
+Any completion landing after step 1 finds no row, so its insert succeeds and
+earns a fresh evaluation. One landing *between* claim and read is both seen
+**and** re-enqueues, producing one redundant pass. That asymmetry is the point.
+
+Keeping the claim **inside** the transaction is what makes it crash-safe: a
+rollback restores the row, so a decider dying mid-evaluation loses nothing. The
+cost is that a concurrent inserter briefly blocks on the unique index — a fair
+trade for needing no recovery path at all.
+
+### The second door: a conflict that takes no lock
+
+The rule above was in place and a fan-out benchmark still left 3 of 40 runs
+stranded: every branch `COMPLETED`, the fork `COMPLETED`, the join never
+scheduled, and nothing in any log.
+
+<Mermaid
+  title="ON CONFLICT DO NOTHING takes no lock"
+  chart={`
+sequenceDiagram
+  participant B as Sibling branch commits late
+  participant Q as DecideQueues
+  participant D as Decider
+  Note over Q: a row already exists,<br/>inserted by an earlier sibling
+  B->>Q: INSERT ... ON CONFLICT DO NOTHING
+  Note over B,Q: no-op, and crucially NO LOCK —<br/>B's transaction is still open
+  D->>Q: DELETE the claim — nothing blocks it
+  D->>D: read the frontier
+  Note over D: B's completion is not visible yet
+  B->>B: COMMIT
+  Note over B,Q: nothing left in the queue to ask<br/>for another evaluation
+`}
+/>
+
+The fix is one clause: **`ON CONFLICT DO UPDATE`**. The row is still pure
+dedupe, and the written `reason` changes nothing an evaluation reads. What
+matters is that `DO UPDATE` **locks** the existing row for the rest of the
+completing transaction, so a claim must wait until that completion is visible.
+That is the interlock the claim-before-read rule always assumed it had.
+
+The regression test asserts the **ordering** — that the claim returns *after*
+the completion commits, not merely that both finish. With `DO NOTHING` the claim
+returns in 1 ms instead of 250, and the test fails.
+
+<Callout type="warn">
+  The correctness fix costs roughly a tenth of throughput, because sibling
+  completions of the same workflow now take a row lock the previous version
+  skipped. That trade is settled: a silent hang is not worth 10%.
+</Callout>
+
+### Enqueue after the change, or with it
+
+`enqueue` must be called *after* the state change that justifies it commits, or
+in the same transaction as it. Enqueueing before the change is visible is how a
+decider reads stale state and concludes there is nothing to do.
+
+## 3. Redundant evaluations are free, lost ones are fatal
+
+Every ambiguous case in the engine resolves toward scheduling another pass. Some
+places where that shows up, so the pattern is recognisable:
+
+- `DecisionResult.noop` exists to be *reported*, not avoided. A pass that
+  changed nothing is expected and harmless; a sustained high no-op rate is a
+  metric, not a bug.
+- The evaluation watermark compares with `>=` rather than `>`, so a task ending
+  exactly on the boundary is seen twice rather than missed.
+- `peekBatch` is explicitly **advisory**. Concurrent deciders receive
+  overlapping batches and that is accepted rather than prevented, because
+  `FOR UPDATE SKIP LOCKED` in its own auto-committing statement releases its
+  locks before the next caller looks. Making it genuinely exclusive would mean
+  claiming outside the evaluation transaction — trading crash safety for
+  distribution. Overlap costs a wasted round trip; a lost wakeup hangs a
+  workflow forever.
+- **`absorbedDuplicate`.** The decider is pure and cannot see the database, so
+  it may emit a schedule for a task that already exists. It then considers itself
+  busy and declines to complete the workflow — while the insert did nothing, so
+  no completion arrives to trigger another pass. When `insertTask` returns
+  nothing, `applyCommands` sets this flag and the evaluator enqueues one more
+  evaluation. One extra pass sees the true state.
+
+This only works because evaluation is idempotent, which is invariant 6.
+
+## 4. Per-workflow serialisation
+
+`WorkflowRepository.lockForEvaluation` is a plain
+`SELECT … WHERE id = $1 FOR UPDATE`. That is the whole coordination mechanism.
+
+<Callout type="warn">
+  **No distributed lock service. Not Redlock, not ZooKeeper, not a Redis
+  mutex.** Postgres is the coordinator, it is crash-safe, and it needs no extra
+  infrastructure. Replacing it with partition ownership is a Phase 8 item gated
+  on a measurement showing lock waits as the limiting factor — and today the
+  measurement says the limit is CPU in one Node process.
+</Callout>
+
+Ten concurrent deciders on one workflow produce exactly one winner, proven by
+test. Two consequences:
+
+- **Operator actions take the same lock.** `pause`, `resume`, `terminate`,
+  `retry`, `rerun`, `skipTask` and `decide` all go through
+  `ExecutionControlService`, each under the workflow row lock, so an operator
+  action and an evaluation are strictly ordered rather than interleaved. Without
+  it a terminate races a schedule and leaves a task running against a workflow
+  that is already `TERMINATED`.
+- **The lock is held across payload resolution.** Offloaded blobs are fetched
+  inside the evaluation, which lengthens the critical section. That is the cost
+  of offloading and the reason the threshold is 256 KB. Nothing is written during
+  those reads, so a slow blob store delays an evaluation but can never corrupt
+  one.
+
+### Pause is not terminal, and that has teeth
+
+`PAUSED` is not a terminal status, so without an explicit check the decider
+keeps evaluating a paused workflow and scheduling new tasks — pause becomes
+decorative. The evaluator returns early on it, and **discards the claim it
+took** rather than leaving it in place, which would busy-loop every decider
+poll for as long as the pause lasts.
+
+That makes `resume` responsible for the wakeup: it re-enqueues an evaluation **in
+the same transaction as the status flip**. Without that enqueue the workflow
+returns to `RUNNING` and sits idle forever, because completions that landed
+during the pause had their wakeups discarded.
+
+## 5. No side effects inside a transaction
+
+Nothing observable may escape before commit. Every outbound action — a
+sub-workflow start, a fire-and-forget `START_WORKFLOW`, an `EVENT`, a
+`KAFKA_PUBLISH`, a status-listener delivery, a human-task trigger — is written
+to `OutboxEvents` **in the same transaction as the state change it describes**,
+and a relay delivers it afterwards.
+
+<Mermaid
+  title="The transactional outbox"
+  chart={`
+flowchart TB
+  subgraph TX["One transaction"]
+    C["claim + lock + read"]
+    D["decide"]
+    A["insert TaskExecutions<br/>insert TaskQueues<br/>insert Timers<br/>append WorkflowEvents"]
+    O["insert OutboxEvents"]
+  end
+  TX --> CM["COMMIT"]
+  CM --> R["OutboxRelay<br/>claim, handle, mark published —<br/>all in one transaction"]
+  R -->|"delivered"| EXT["broker, child workflow,<br/>signed webhook, Kafka topic"]
+  R -->|"handler failed"| BO["backoff, attempts plus one"]
+  BO -->|"past maxAttempts"| DL["dead letter — kept,<br/>inspectable, replayable"]
+`}
+/>
+
+Delivery is **at-least-once** by construction: the claim, the handler and the
+mark-published share one transaction, so a crash mid-delivery rolls back the
+mark and the event is redelivered. Handlers must therefore be idempotent, which
+is why `StartWorkflow` carries an idempotency key derived from the task
+identity.
+
+### Nothing is ever silently dropped
+
+An earlier version marked an event with **no registered handler** as delivered,
+to stop the outbox growing without bound. That was wrong, and the reasoning is
+worth keeping:
+
+> "No subscriber" conflates two very different situations — a topic nobody will
+> ever consume, and a handler that is not registered **yet** (deploy ordering, a
+> crashed module, a config typo). In the second case the event is silently lost,
+> and since this relay is what starts sub-workflows, the result is a parent
+> workflow hanging forever with no evidence anywhere.
+
+Undeliverable events now back off exponentially and, past `maxAttempts` (10 by
+default, generous because the usual cause is a module still starting), move to a
+**dead letter**. Dead-lettered rows are kept and replayable, and they leave the
+deliverable partial index so the hot path stays small.
+
+A failing handler still does not fail its batch — one broken subscriber must not
+stall every other topic — but failure is now recorded *per event with backoff*,
+rather than retried on every pass. A permanently broken handler previously
+busy-looped on its row, burning a claim slot each time.
+
+<Callout type="warn">
+  This machinery was built and then **nothing registered a handler in the
+  server**. `SUB_WORKFLOW` and `START_WORKFLOW` published to the outbox, the
+  payload types were exported, and every `store` test registered its own handler
+  inline — so the gap was invisible there. In a real deployment those events
+  backed off, dead-lettered, and every parent waited forever for a child that was
+  never created. If you add an outbox topic, the container-level test is the one
+  that proves it is wired.
+</Callout>
+
+### The child's outcome comes back through the applier
+
+`decide` is pure and sees one workflow's state, so a child's outcome is not
+something it can know. `reportToParent` in the evaluator completes the parent's
+`SUB_WORKFLOW` task and enqueues an evaluation on the parent — both in the
+**child's** transaction, so a parent is never woken for a child whose completion
+rolled back.
+
+For a long time nothing did this at all. The child started, ran and completed
+with its parent links correctly set, and the parent sat on a `SCHEDULED`
+sub-workflow task until its timeout. The engine's own tests stop at the emitted
+command; the store's tests drove the child by hand.
+
+## 6. Idempotency, in four places
+
+**Task identity** is the unique index
+`("workflowId", "refName", "iteration", "attempt")` on `TaskExecutions`. This is
+what makes the decider safe to re-run. `attempt` is part of the identity, not
+incidental to it: without it a retry writes at the same slot as the failed
+attempt it supersedes, `ON CONFLICT DO NOTHING` absorbs it, and the retry
+silently never runs — while the decider reports that it scheduled one.
+
+**Idempotent starts** live in an unpartitioned `IdempotencyKeys` table, and the
+reason is subtle enough to have shipped wrong once:
+
+<Callout type="warn">
+  A unique index on a partitioned table **must include every partition-key
+  column**. `WorkflowExecutions` is partitioned on `startedAt`, which defaults to
+  `now()` — so a unique index over `("namespaceId","idempotencyKey","startedAt")`
+  is unique on a value that differs on every insert and therefore never
+  conflicts. It looked like a working idempotency guarantee and silently created
+  duplicate executions instead. The same trap is *loud* on `TaskQueues`, where
+  Postgres rejects `UNIQUE ("taskId")` outright.
+</Callout>
+
+Concurrent idempotent starts had a second bug on top: the loser of the claim
+race looked up the winner's workflow **from inside its own transaction**, where
+the winner is still uncommitted and therefore invisible at any isolation level.
+Two simultaneous starts with the same key produced an error rather than one
+shared execution. The lookup now happens *after* the losing transaction ends,
+with a brief bounded retry to cover the commit window.
+
+**Sub-workflow starts** are deduplicated on a key that includes
+`parentTaskAttempt`. Without the attempt the key repeats, so a retry is absorbed
+as a duplicate of the previous attempt's already-finished child, and the retried
+task is left with nothing that will ever complete it.
+
+**Published events** carry `_event.id`, a stable identity derived from the task,
+for the *subscriber*. It is not a guard against double publishing — the
+transaction and the unique index do that. Relay delivery is at-least-once, so a
+consumer needs something stable to deduplicate across redeliveries. (That
+comment was once written the other way round, and it had to be corrected before
+it misled someone.)
+
+## 7. Lease fencing
+
+`leaseToken` is a fencing token: a random UUID stamped on the queue row and the
+task row at lease time. Every subsequent write by the holder carries it.
+
+<Mermaid
+  title="What the fencing token prevents"
+  chart={`
+sequenceDiagram
+  participant W1 as Worker 1
+  participant S as Server
+  participant W2 as Worker 2
+  W1->>S: lease — token T1
+  Note over W1: stalls, lease expires
+  S->>S: reclaimAbandoned clears the lease<br/>and resets the task row
+  W2->>S: lease — token T2
+  W1->>S: report result with T1
+  S-->>W1: refused — token mismatch
+  W2->>S: report result with T2
+  S-->>W2: accepted
+`}
+/>
+
+Fencing applies to `renewLease`, `acknowledge`, `releaseLease`, `defer`,
+`completeTask` and task-log appends. A log anyone could append to is worse than
+none during an investigation.
+
+Two things that had to be fixed, both of which will recur if the pattern is
+broken again:
+
+**Leasing and task state are one transaction.** Previously the queue row got a
+lease and fencing token while the `TaskExecutions` row stayed `SCHEDULED` with
+no token at all — so nothing could tell a queued task from a running one, and
+`completeTask`'s fencing check could never match. `TaskDispatchService` is now
+the single place a worker interacts with, so the two rows cannot disagree about
+who holds the task. When the in-process system-task runner was added it leased
+straight from the queue repository, skipping `markTaskStarted`, and
+reintroduced exactly that bug: no fencing token, every result silently refused,
+the task reclaimed and run again, forever. `leaseSystemTasks` now goes through
+the same discipline.
+
+**A finished task stays finished.** The lease token alone does not guarantee
+it: a timeout ends the task *without revoking the token*, so a worker reporting
+a second late still matched — and overwrote `TIMED_OUT` with `COMPLETED` after
+the retry had already been scheduled, leaving two attempts both claiming the
+result. `completeTask` now also requires the current status to be non-terminal.
+A mutation removing that guard fails the regression test.
+
+### Semaphore permits are leased, not held
+
+The same reasoning one level up. A crashed worker otherwise drains one permit
+per crash until the semaphore is permanently empty and nothing runs. Permits are
+released **in the same transaction as the task result** — releasing after leaves
+a window where a finished task still holds one; releasing before lets a second
+task in while the first is still running.
+
+Acquisition is **all-or-nothing**: taking a subset and waiting for the rest is
+how two tasks needing the same two permits deadlock, each holding one. And a
+task refused a permit goes **straight back on the queue** rather than waiting out
+its lease, or a contended semaphore idles the queue for the full lease duration
+on every miss.
+
+## 8. No clocks in correctness decisions
+
+Determining "which tasks finished since the last pass" went through three
+designs, and the two failures are worth recording because each looked correct.
+
+<Mermaid
+  title="Three designs for the evaluation watermark"
+  chart={`
+flowchart TB
+  V1["1. lastEvaluatedAt vs a JS new Date()"] --> F1["Task endedAt is written by Postgres,<br/>so correctness depended on host and<br/>container clocks agreeing. Under skew,<br/>finished tasks became invisible."]
+  V2["2. The same watermark on the database clock"] --> F2["Postgres now() is TRANSACTION START.<br/>A task whose transaction begins before an<br/>evaluation but commits after its SELECT gets<br/>a timestamp below the new watermark and is<br/>NEVER SEEN AGAIN. Presented as a 1-in-3 flake."]
+  V3["3. deciderSeenAt, set inside the<br/>evaluation transaction for exactly<br/>the completions that pass consumed"] --> F3["No clock is involved, so neither failure<br/>mode exists, and a rollback leaves tasks<br/>unprocessed for the next decider."]
+`}
+/>
+
+A related bug surfaced alongside it, and the fix is now part of the engine's
+contract: the decider inferred "first evaluation" from `pending` and `completed`
+both being empty, which is **also** true of a finished workflow whose watermark
+has moved past every completion. It re-scheduled the entry task, which already
+existed, and left the workflow at `RUNNING` forever.
+`EvaluationState.hasAnyTask` distinguishes the two explicitly.
+
+<Callout type="warn">
+  **A flaky test is a race condition that has not been diagnosed yet.** Nx
+  flagged the watermark bug as flaky rather than failing. Retrying it would have
+  hidden a defect that strands workflows in production.
+</Callout>
+
+## 9. Sharing a transaction is not the same as serialising
+
+This one has been got wrong twice, in two different layers, with a comment
+explaining the wrong reasoning both times.
+
+> Two `READ COMMITTED` transactions see the same snapshot: both count
+> `limit - 1` running, both conclude there is room, and both insert. The
+> transaction makes the check and the insert commit *together*; it does nothing
+> to stop a second transaction reading the same count.
+
+The first instance: `concurrentExecLimit` counted in-flight work and then leased
+against that count. Ten concurrent dispatchers each read zero, each granted
+themselves the full cap, and **45 tasks were leased against a cap of 5**. Every
+sequential test passed; only the contention test exposed it.
+
+The second instance, one layer up and after that comment was already written:
+per-tenant quotas, where splitting the check and the insert into separate
+transactions changed nothing and 149 server tests still passed.
+
+The instrument in both cases is a **transaction-scoped advisory lock** keyed on
+the contended thing — the queue, the namespace, the rate-limit key, the workflow
+id. It releases automatically at commit or rollback, so there is no cleanup path
+to get wrong, and it contends only with other writers of the same key.
+
+Advisory locks in this codebase, and what each one serialises:
+
+| Key | Serialises |
+|---|---|
+| `namespaceId:queueName` | Queue admission — `concurrentExecLimit` |
+| `quota:namespaceId` | Per-tenant concurrency quota at workflow start |
+| `rate:ns:def:key` | Per-key workflow rate limits, including the admission queue |
+| `hashtext(workflowId)` | `WorkflowEvents.seq` allocation in `completeTask` |
+| `ns:schema:name`, `ns:form:name`, `prompt:ns:name` | Version numbering for immutable versioned resources |
+
+<Callout type="warn">
+  **`pg_advisory_xact_lock` outside a transaction is released the instant its own
+  statement ends.** It looks like protection and provides none. `completeTask`
+  now opens its own transaction when the caller supplies none, for exactly this
+  reason. The same trap applies to **`SET LOCAL`**, which is silently ignored
+  outside an explicit transaction — a `SET LOCAL statement_timeout` in the
+  `JDBC` task read as though it enforced a limit and let `pg_sleep(5)` sail past
+  a 250 ms timeout.
+</Callout>
+
+### A concrete case: the history sequence
+
+Allocating `seq` as `MAX(seq) + 1` is safe for the decider, which holds the
+workflow row lock. But a worker reporting a result holds nothing, so two workers
+finishing two branches of a fork at the same instant both read the same maximum
+and write the same number. Nothing rejects it — the index is not unique. The
+damage surfaces far away: a live SSE stream reading `seq > cursor` skips
+whichever duplicate landed in an earlier batch, so an event is lost from a log
+whose entire value is being complete. Without the lock, six concurrent
+completions produce three events instead of seven.
+
+### And one where a shared transaction *was* enough
+
+The human-task claim. It was first written as a read, a check, then a
+conditional update — and removing the `claimedBy IS NULL` predicate left **all
+416 tests passing**, including the one named "has exactly one winner under
+concurrency". The read-then-check was short-circuiting, so whether two
+simultaneous claims actually collided depended on how their reads and writes
+interleaved. Rewritten as a **single conditional `UPDATE`**, Postgres serialises
+the two on the row lock and the loser re-evaluates the predicate after the
+winner commits, matching nothing. The outcome no longer depends on timing at
+all.
+
+## Defence in depth: the sweeper that should find nothing
+
+`StuckWorkflowSweeper` finds workflows that are `RUNNING` with **nothing that
+could ever wake them**: no unfinished task, no armed timer, no pending
+evaluation, idle for at least five minutes.
+
+<Callout type="warn">
+  **It should never find anything.** The claim ordering, the outbox and the
+  timer sweeper are each designed so a wakeup cannot be lost. A hit means one of
+  those invariants was violated, so it is worth alerting on rather than quietly
+  fixing: re-enqueueing recovers the workflow, but the underlying bug stays
+  until someone looks.
+</Callout>
+
+It deliberately excludes executions waiting for a rate-limit slot, which are not
+stuck — waking them would do nothing.
+
+## Before you change the evaluator
+
+- Does the claim still happen before any read, in the same transaction?
+- Does every enqueue happen after, or with, the change that justifies it?
+- Does anything now escape the transaction that did not before?
+- Does any new ambiguous case resolve toward *fewer* passes? Invert it.
+- Does any new check-then-write cross a transaction boundary? It needs an
+  advisory lock, and a test that races the real transactions rather than
+  approximating concurrency through one event loop.
+- Does any new condition `throw` out of the pass for something that will recur
+  next pass? Fail the task instead.
+- Does the new code make a decision from a timestamp? Find another way.
+- Is there a test that **fails when the change is reverted**, and has it been
+  seen to fail?

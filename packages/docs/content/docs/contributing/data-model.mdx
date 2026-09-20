@@ -1,0 +1,475 @@
+---
+title: Data model
+description: Every table, why it is partitioned the way it is, the indexes that matter, and the Postgres 18 requirements — including the identifier-quoting trap.
+---
+
+The schema is the design. `FOR UPDATE SKIP LOCKED` inside a CTE,
+`ON CONFLICT DO NOTHING` as an idempotency guarantee, partition pruning, partial
+indexes — those *are* the correctness argument, which is why there is no ORM
+here and why DDL is written as raw SQL rather than through a builder.
+
+Migrations live in `packages/store/src/lib/migrations/`, numbered and applied in
+the order listed by `MIGRATIONS` in `packages/store/src/lib/database.ts`. Each
+runs inside its own transaction — DDL is transactional in Postgres, so a failure
+part-way leaves no half-created schema behind.
+
+## Read this first: the identifier-quoting trap
+
+<Callout type="warn">
+  **PostgreSQL folds unquoted identifiers to lowercase.** This codebase uses
+  PascalCase table names and camelCase column names. So
+  `SELECT * FROM TaskQueues WHERE queueName = $1` silently becomes
+  `taskqueues` / `queuename` and errors. **Every identifier in every raw
+  statement and every migration must be double-quoted.**
+</Callout>
+
+This is a standing trap rather than a one-off, because the entire hot path is
+hand-written SQL. Two things keep it survivable:
+
+- **Kysely's builder checks column and table names at compile time**, and emits
+  quoted identifiers. That is a large part of why it is here — the repositories
+  were already writing this SQL by hand, and the builder made mistyping it a
+  compile error.
+- **There is no `CamelCasePlugin`.** The columns are genuinely camelCase in the
+  database, not snake_case being translated. The plugin would rewrite
+  `queueName` to `queue_name` and every query would fail.
+
+`packages/store/src/lib/schema.ts` is a pure type declaration of every table —
+no classes, no decorators, no runtime behaviour. Schema drift is a **compile
+error** rather than something a test has to go looking for. It replaced ~700
+lines of ORM models plus a drift test, and along the way exposed a real
+mismatch: `taskDefinitionSchema` declared `inputKeys`, `outputKeys` and
+`ownerEmail` and the table had none of them. The ORM had been silently
+discarding unknown attributes.
+
+### Three Kysely typing rules that are not optional
+
+```ts
+type Json<T>          = ColumnType<T, string, string>;
+type JsonDefaulted<T> = ColumnType<T, string | undefined, string>;
+type NullableJson<T>  = ColumnType<T | null, string | null | undefined, string | null>;
+```
+
+- **`Json | null` and `Generated<Json>` do not work.** Kysely cannot unwrap a
+  union of a `ColumnType` with `null`, nor a `Generated` wrapped around one;
+  every write fails to infer as an unassignable `ValueExpression`. Nullability
+  and defaults must live *inside* the `ColumnType`.
+- **JSONB writes take a serialised string, not an object.** Kysely cannot tell a
+  plain object from an expression, so the `Json` column type accepts `string` on
+  write and the `json()` helper makes serialisation explicit at each call site.
+- **`json()` is the single funnel every JSONB write passes through**, which is
+  why the NUL fix belongs there — see below.
+
+### The NUL byte Postgres cannot store
+
+<Callout type="warn">
+  Postgres `jsonb` **cannot represent a NUL inside a string**. JSON can,
+  JavaScript can, and so can any HTTP response. A task that called a public API
+  whose test data contained one got its 200, could not record the result — the
+  insert threw with `unsupported Unicode escape sequence` — and the task never
+  reached a terminal state. The workflow waited on something that would never
+  finish, with nothing in the UI to explain it.
+</Callout>
+
+`json()` strips the escape rather than failing. The data is already in hand, the
+task did its work, and refusing to record a successful call over one unprintable
+byte is the worse bug; a NUL mid-text is a truncation marker or a fuzzer's
+leftover, never content.
+
+## Postgres 18 is the baseline
+
+`assertDatabaseCapabilities` refuses to start against `server_version_num` below
+180000, and then runs `SELECT uuidv7()` to prove it. Two features are
+load-bearing rather than incidental:
+
+- **`uuidv7()`** — time-ordered UUIDs. `WorkflowExecutions` and `TaskExecutions`
+  are the hottest insert tables; random UUIDv4 keys scatter btree inserts across
+  the whole index and cause severe page splits at this write rate. UUIDv7 keeps
+  inserts at the right edge.
+- **Async I/O** (`io_method=worker`, set in `docker-compose.yml`) — 2 to 3× on
+  sequential scans and, crucially, on **vacuum**. Vacuum throughput on the queue
+  tables is the exact pressure point of a Postgres-backed queue.
+
+One operational gotcha that costs a restart: the Postgres 18 image requires the
+volume mounted at **`/var/lib/postgresql`**, not `/var/lib/postgresql/data`. The
+pre-18 path makes the container crash-loop on startup.
+
+## The engine tables
+
+<Mermaid
+  title="Partitioning at a glance"
+  chart={`
+flowchart TB
+  subgraph RANGE["PARTITION BY RANGE — dropped, never deleted"]
+    WE["WorkflowExecutions<br/>on startedAt, monthly<br/>retention 12"]
+    WEV["WorkflowEvents<br/>on at, monthly<br/>retention 12"]
+    TM["Timers<br/>on fireAt, HOURLY<br/>retention 48"]
+    AU["AuditEvents<br/>on createdAt, monthly<br/>retention 84"]
+  end
+  subgraph HASH["PARTITION BY HASH — co-location and spread"]
+    TE["TaskExecutions<br/>on workflowId, 16 ways"]
+    TQ["TaskQueues<br/>on queueName, 8 ways"]
+  end
+  subgraph FLAT["Deliberately unpartitioned"]
+    IK["IdempotencyKeys<br/>so its constraint constrains"]
+    DQ["DecideQueues<br/>one row per pending pass"]
+    OB["OutboxEvents"]
+  end
+`}
+/>
+
+### `WorkflowExecutions`
+
+Range-partitioned **monthly on `startedAt`**, with `PRIMARY KEY ("id",
+"startedAt")` — a primary key on a partitioned table must include the partition
+key. Old executions are dropped a partition at a time, which is near-instant,
+instead of a `DELETE` that then has to be vacuumed.
+
+Indexes that matter:
+
+| Index | Answers |
+|---|---|
+| `("namespaceId","status","startedAt" DESC)` | The executions list, which defaults to what is running |
+| `("namespaceId","defName","startedAt" DESC)` | "Show me runs of *this* workflow" — the second question every dashboard asks |
+| `("namespaceId","startedAt" DESC,"id" DESC)` | The unfiltered newest-first listing, and the keyset cursor's range scan |
+| `("namespaceId","correlationId") WHERE NOT NULL` | Correlated lookup |
+| `("namespaceId","idempotencyKey") WHERE NOT NULL` | Reading back an idempotent start |
+| `("parentWorkflowId") WHERE NOT NULL` | Tracing a sub-workflow back, and drawing the tree |
+| GIN `("input" jsonb_path_ops)`, GIN `("output" …)` | The `input.x:y` and `output.x:y` search terms, as JSON containment |
+| `("inputRef") WHERE NOT NULL`, `("outputRef") …` | Orphaned-payload collection |
+
+Every ordered index is `startedAt DESC` to match the query's sort. An index whose
+order disagrees still filters, but the planner must then sort the whole matched
+set before returning the first page — exactly the cost keyset pagination exists
+to avoid.
+
+<Callout type="info">
+  **Keyset pagination, never `OFFSET`.** Offset re-scans and discards every
+  skipped row, so page 500 costs 500 times page 1 — but the serious problem is
+  correctness: this table takes continuous inserts, so rows shift between
+  requests and an offset silently skips and duplicates executions. A cursor on
+  `(startedAt, id)` is stable under concurrent inserts and costs the same on
+  every page, and `startedAt` leads it so the planner can prune partitions.
+
+  The cursor carries `"startedAt"::text` at **full precision**, and both sides of
+  the comparison are cast explicitly. Round-tripping through a JavaScript `Date`
+  truncates `timestamptz` microseconds to milliseconds, so the encoded value
+  sorted *before* the row it came from and a `<` comparison skipped every row
+  sharing that millisecond — paging 12 executions returned 9. Leaving the cast
+  to inference can pick `text`, which orders UUIDs lexically and quietly returns
+  the wrong page.
+</Callout>
+
+The `version BIGINT` column is an optimistic-concurrency counter bumped on every
+committed evaluation.
+
+### `IdempotencyKeys`
+
+Unpartitioned, `PRIMARY KEY ("namespaceId", "key")`, and the reason is the
+single most instructive trap in this schema.
+
+<Callout type="warn">
+  **A unique index on a partitioned table must include every partition-key
+  column.** `WorkflowExecutions` is partitioned on `startedAt`, which defaults
+  to `now()` — so a unique index over
+  `("namespaceId","idempotencyKey","startedAt")` is unique on a value that
+  differs on every insert and therefore **never conflicts**. It looked like a
+  working idempotency guarantee and silently created duplicate executions.
+
+  This table is not partitioned, so its constraint actually constrains.
+</Callout>
+
+The same rule is *loud* on `TaskQueues`, where Postgres rejects
+`UNIQUE ("taskId")` outright — which is how it was noticed there and not here.
+
+### `TaskExecutions`
+
+Hash-partitioned **16 ways on `workflowId`**, so one workflow's tasks stay
+co-located and the frontier query touches a single partition.
+`PRIMARY KEY ("workflowId", "id")`.
+
+Four indexes, three of them partial:
+
+```sql
+-- Task identity. What makes the decider safe to re-run.
+CREATE UNIQUE INDEX "TaskExecutions_identity_idx"
+  ON "TaskExecutions" ("workflowId", "refName", "iteration", "attempt");
+
+-- The pending frontier. Partial, so its size tracks in-flight work
+-- rather than total history.
+CREATE INDEX "TaskExecutions_frontier_idx"
+  ON "TaskExecutions" ("workflowId")
+  WHERE "status" NOT IN ('COMPLETED','FAILED', ... );
+
+-- Terminal tasks the decider has not yet reacted to. Holds a handful,
+-- not all history.
+CREATE INDEX "TaskExecutions_unprocessed_idx"
+  ON "TaskExecutions" ("workflowId")
+  WHERE "endedAt" IS NOT NULL AND "deciderSeenAt" IS NULL;
+
+-- Recent attempts per task definition — the retry-budget check, which
+-- would otherwise sequentially scan task history on every retry decision.
+CREATE INDEX "TaskExecutions_recent_by_def_idx"
+  ON "TaskExecutions" ("namespaceId", "taskDefName", "scheduledAt" DESC);
+```
+
+`attempt` is part of the identity, not incidental to it. Without it a retry
+writes at the same slot as the failed attempt it supersedes,
+`ON CONFLICT DO NOTHING` absorbs it, and the retry silently never runs — while
+the decider reports that it scheduled one. Including it also preserves the full
+attempt history, which is what makes a flaky task diagnosable after the fact.
+
+`deciderSeenAt` is the evaluation watermark, and it is a column rather than a
+timestamp comparison for a reason that took three designs to arrive at — see
+[Correctness](/docs/contributing/correctness).
+
+### `TaskQueues`
+
+Hash-partitioned **8 ways on `queueName`**, `PRIMARY KEY ("queueName", "id")`
+with `id BIGSERIAL`. This is the highest-churn table in the system, and it is
+deliberately narrow: leasing must not touch anything wider.
+
+```sql
+-- The dequeue path. Partial on unleased rows, so leased work leaves
+-- the index entirely rather than being scanned past on every poll.
+CREATE INDEX "TaskQueues_dequeue_idx"
+  ON "TaskQueues" ("queueName", "priority" DESC, "id")
+  WHERE "leaseExpiresAt" IS NULL;
+
+-- Drives the lease-expiry sweeper.
+CREATE INDEX "TaskQueues_lease_idx"
+  ON "TaskQueues" ("leaseExpiresAt") WHERE "leaseExpiresAt" IS NOT NULL;
+
+-- ("queueName","taskId"), not ("taskId") — the partition key must be in it.
+CREATE UNIQUE INDEX "TaskQueues_task_idx" ON "TaskQueues" ("queueName", "taskId");
+```
+
+<Callout type="warn">
+  That last constraint has an **API consequence**: every lookup by task must
+  also carry its queue name, or the query degenerates into a scan across all
+  eight partitions. `renewLease`, `acknowledge`, `releaseLease` and `defer` all
+  take `queueName` for exactly this reason, and so does the `lease` statement's
+  redundant-looking `WHERE q."queueName" = $1` on the update side.
+</Callout>
+
+Each partition carries per-table autovacuum tuning:
+
+```sql
+ALTER TABLE "TaskQueues_p0" SET (
+  autovacuum_vacuum_scale_factor = 0.01,
+  autovacuum_vacuum_cost_limit = 2000,
+  fillfactor = 70
+);
+```
+
+Stock autovacuum lets dead tuples accumulate faster than they are reclaimed, and
+dequeue latency degrades steadily until someone notices. `fillfactor = 70`
+leaves room for HOT updates so a lease stamp does not have to move the row.
+`DecideQueues` and `RateLimitBuckets` get the same treatment.
+
+`taskType` is denormalised onto the queue row, written once at enqueue and never
+updated. The type is on `TaskExecutions`, but that is the widest table in the
+system and this is its hottest one — the whole reason the queue is narrow is
+that the in-process system-task runner must be able to find its work without a
+join.
+
+### `DecideQueues`
+
+```sql
+CREATE TABLE "DecideQueues" (
+  "workflowId"  UUID PRIMARY KEY,
+  "namespaceId" UUID NOT NULL,
+  "enqueuedAt"  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "reason"      TEXT
+);
+```
+
+The primary key **is** the dedupe: many completions collapse into a single
+pending evaluation. `reason` is written by `ON CONFLICT DO UPDATE` and read by
+nobody — its only job is to give the conflict something to update, and therefore
+a lock to take. That is invariant 2 on the
+[Correctness](/docs/contributing/correctness) page, and deleting the column
+would break it.
+
+### `Timers`
+
+Range-partitioned **hourly on `fireAt`**, retention 48 periods, with a partial
+index on `("fireAt") WHERE "claimedAt" IS NULL`. The poller scans only the
+leading partition with an index range scan, batching with `SKIP LOCKED`. Old
+partitions are dropped, not deleted. Millions of pending timers stay cheap
+because the working set is always the current hour.
+
+Kinds: `scheduleToStart`, `startToClose`, `taskTimeout`, `workflowTimeout` and
+`wait`. Deadlines are cancelled when a task finishes, and the sweeper re-checks
+state before acting — a timer armed at schedule time usually outlives its
+usefulness, and firing it against completed work would invent a failure.
+
+### `OutboxEvents`
+
+`BIGSERIAL` primary key, with delivery bookkeeping — `attempts`,
+`nextAttemptAt`, `lastError`, `deadLetteredAt` — and two indexes:
+
+```sql
+-- The relay's hot path: deliverable events only. Dead-lettered and
+-- published rows leave the index entirely.
+CREATE INDEX "OutboxEvents_deliverable_idx"
+  ON "OutboxEvents" ("nextAttemptAt", "id")
+  WHERE "publishedAt" IS NULL AND "deadLetteredAt" IS NULL;
+
+CREATE INDEX "OutboxEvents_deadletter_idx"
+  ON "OutboxEvents" ("deadLetteredAt") WHERE "deadLetteredAt" IS NOT NULL;
+```
+
+The partial predicate is what lets the dead letter be *kept* — inspectable and
+replayable — without the hot path paying for it.
+
+### `WorkflowEvents`
+
+Range-partitioned monthly on `at`, with `("workflowId", "seq")` as the index
+behind both the history view and the live SSE stream's resume. `seq` is
+**gap-free per workflow and allocated from the table, never from a clock**: two
+events written in one transaction can share a timestamp to microsecond
+precision, and a history whose order depends on tie-breaking is not a history.
+
+An `AFTER INSERT … FOR EACH ROW` **trigger** on the partitioned parent raises
+`pg_notify('node_flow_workflow_events', workflowId || ':' || seq)`.
+
+<Callout type="warn">
+  The trigger is the design, not an implementation detail. A `NOTIFY` that every
+  writer must remember to issue is the shape of bug that has silently disabled
+  four features in this codebase, and its symptom here would be the worst kind —
+  a dashboard that works in development and goes quiet on whichever path nobody
+  exercised. A trigger cannot be forgotten: the decider, the sweeper, an
+  operator action and a migration backfill all raise it identically, and
+  Postgres fires it at **commit** so nothing is announced that later rolls back.
+
+  It is declared on the **parent**, so Postgres propagates it to every partition
+  including ones the roller creates later. Declaring it per-partition would work
+  until the next month rolled over and then stop, silently.
+
+  The payload is `workflowId:seq` and nothing else: Postgres caps a notification
+  at 8000 bytes and task payloads are unbounded, so carrying events inline would
+  fail on exactly the large payloads most worth watching. A subscriber that
+  reads from its own cursor makes a dropped notification cost latency and
+  nothing else.
+</Callout>
+
+One genuine finding from trying to mutate this: a **statement-level** trigger
+referencing `NEW` does not error in Postgres. It fires and calls `pg_notify`
+with an **empty payload**, because the unassigned `NEW` collapses the
+concatenation to `NULL`. The listener's `if (!message.payload) return` guard is
+what turns that into "no notification" rather than a crash — and is why a
+mistake like this would present as a quiet dashboard rather than a loud failure.
+
+### Concurrency control tables
+
+| Table | Shape | Note |
+|---|---|---|
+| `Semaphores` | `("namespaceId","name")` to `permits` | An **unconfigured** semaphore deliberately does not gate. That is why `configureSemaphore` having no caller was worse than the feature being absent: a task could name one, register cleanly, and run entirely ungated. There is now a `/v1/ns/{ns}/semaphores` API. |
+| `SemaphoreHolders` | `("namespaceId","name","taskId")` plus a `leaseExpiresAt` | Permits are **leased**, not held, so a crashed worker cannot drain one per crash. Two indexes: one for counting holders (the hot path of every acquire), one on expiry. |
+| `RateLimitBuckets` | `("namespaceId","queueName","windowStart")` to `count` | A separate table rather than counting queue rows, because those are deleted on acknowledgement — the history a rate limit needs is exactly what the queue throws away. Windows are **fixed, not sliding**: a fixed window admits a burst of up to 2× at a boundary, and that is a fair trade for a single upsert on the hot path. |
+
+### `TaskOutputCache`
+
+`("namespaceId","taskDefName","key")` with an `expiresAt`, pruned hourly. Per
+task definition, so unrelated tasks never share results. Offloaded outputs are
+**not** cached: caching a blob reference would outlive what it points at.
+
+## Partition maintenance
+
+Range partitioning only pays for itself if something maintains it.
+`PartitionManager` creates partitions ahead and drops expired ones, and it is
+strictly more expensive to adopt the longer it is deferred: rows landing in
+`DEFAULT` cannot be dropped by detaching a partition, and attaching a real
+partition later requires a **full scan** of `DEFAULT` to prove no row belongs in
+the new range.
+
+Two bugs here that a unit test could not see, because both need a database with
+rows already in it:
+
+<Callout type="warn">
+  **The roller could never create the current period's partition.** The
+  migration created only `DEFAULT` partitions, so from the first insert every
+  row landed there — and Postgres then refuses to create a partition that would
+  orphan those rows. `ensureAhead` failed with a check violation on that same
+  period forever, so retention silently never worked.
+
+  Fixed at both ends: the migration now **seeds the current period** so a fresh
+  database never writes to `DEFAULT` at all, and the manager recovers from a
+  populated one by detaching `DEFAULT`, creating the partition, moving only the
+  in-range rows and re-attaching — all in one transaction, because a crash
+  without the `DEFAULT` attached would fail every out-of-range insert.
+</Callout>
+
+**Concurrent creation is the normal case, not an edge one**, because every
+poller replica runs this loop. Duplicate-table (`42P07`), overlapping-partition
+(`42P17`) and unique-violation errors are all treated as "someone else got there
+first" — the third because two concurrent `CREATE TABLE`s can collide on the
+`pg_class` index rather than raising `duplicate_table`, depending on how far
+each transaction had progressed.
+
+`CREATE TABLE IF NOT EXISTS` was the original spelling and is wrong for this:
+the losing side of a race no-ops *successfully* and then reports having created
+the partition, so `ensureAhead` returned more names than partitions it made.
+Dropping `IF NOT EXISTS` lets the duplicate raise, and exactly one caller now
+claims each creation.
+
+The partition tests passed over the first bug because `truncateAll` runs before
+each one, so `DEFAULT` was always empty. It took wiring the runners against a
+database with live workflows in it to expose the failure.
+
+## The platform tables
+
+Not the engine, but the same conventions. Grouped by what they are for:
+
+| Area | Tables |
+|---|---|
+| Identity | `Users`, `Sessions`, `ServiceAccounts`, `ApiKeys`, `WorkloadIdentities`, `Groups`, `GroupMembers`, `ResourceGrants` |
+| Secrets and config | `Secrets`, `EnvironmentVariables`, `Integrations`, `Schemas` |
+| Triggers | `Schedules`, `ScheduleRuns`, `EventHandlers`, `EventExecutions`, `IncomingWebhooks`, `WebhookCallbacks`, `StatusListeners` |
+| Human work | `HumanTasks`, `FormTemplates` |
+| Observability | `AuditEvents`, `TaskLogs`, `WorkerPolls`, `SavedViews` |
+| AI | `Prompts`, `VectorDocuments` |
+| Messaging | `WorkflowMessages` |
+
+Two worth calling out because their shape encodes a decision:
+
+**`AuditEvents` is append-only by construction.** There is no update and no
+delete in the repository, and that absence *is* the feature — an audit log with
+an edit path is one nobody can rely on, and the argument for adding one always
+sounds reasonable in the moment. Retention is a dropped partition, which never
+rewrites a surviving row. It is kept for 84 months against execution history's
+12, because "who changed this?" is usually asked long after the executions
+involved were pruned. Columns are selected **by name**, so password, token and
+key hashes and sealed secret values are never recorded.
+
+**`VectorDocuments` stores embeddings as `real[]`**, so retrieval works on the
+stock Postgres image — keeping Postgres the only required dependency. When the
+`vector` extension is present the migration enables it and search casts to it,
+so distance is computed in C; without it, a SQL cosine function is used. The
+same test runs against both `postgres:18-alpine` and `pgvector/pgvector:pg18`
+and asserts identical ranking.
+
+## Adding a migration
+
+1. Write a new file in `packages/store/src/lib/migrations/`, numbered next in
+   sequence, exporting `{ name, up, down }`. The `name` must match the file.
+2. Add it to the `MIGRATIONS` array in `database.ts`. That array is also what
+   readiness compares against, so a migration that is written but not listed is
+   invisible to the health check as well as to the migrator.
+3. Quote **every** identifier.
+4. If you add a unique index to a partitioned table, it must include the
+   partition key — or it will not do what you think, silently, if the partition
+   key has a per-row default.
+5. If you add a column that a repository writes, add it to that repository's
+   **explicit** column list. `upsertTaskDefinition` names its columns rather
+   than spreading a parsed schema, which is what stops the storage layout
+   coupling itself to the DSL — and is also how `secretOutputFields` was
+   accepted, validated, returned by the API and dropped on write.
+
+<Callout type="info">
+  `pendingMigrations()` returns a **list**, not a count, and readiness reports
+  which ones are missing. Comparing two counts cannot tell you when a database
+  is *ahead* of the binary — a replica left running through a rollback — which
+  reads as healthy on any count-based check.
+</Callout>

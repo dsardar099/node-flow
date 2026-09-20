@@ -1,0 +1,25 @@
+{
+  "title": "Guide",
+  "description": "Running node-flow and building workflows on it",
+  "root": true,
+  "pages": [
+    "index",
+    "quickstart",
+    "concepts",
+    "---Authoring---",
+    "workflows",
+    "system-tasks",
+    "execution-controls",
+    "---Running work---",
+    "workers",
+    "conductor",
+    "---Operating---",
+    "self-hosting",
+    "security",
+    "configuration",
+    "troubleshooting",
+    "cli",
+    "api",
+    "licence"
+  ]
+}

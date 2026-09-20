@@ -1,0 +1,406 @@
+---
+title: Troubleshooting
+description: A symptom-first field guide for startup, authentication, stuck workflows, idle workers, system tasks, Conductor clients, and overloaded installations.
+---
+
+Start with the boundary that stopped moving. A workflow system has several
+independent loops; restarting all of them may hide the evidence and does not
+tell you which loop failed.
+
+<Mermaid
+  title="Follow the first answer that is no"
+  chart={`
+flowchart TD
+  A[Did the start request return an execution id?] -->|no| AUTH[Check auth, namespace, admission and definition]
+  A -->|yes| B[Does GET execution show a scheduled task?]
+  B -->|no| DEC[Check decider role, decide queue and history]
+  B -->|yes| C{Task family?}
+  C -->|SIMPLE| Q[Is queue depth greater than zero?]
+  C -->|system task| R[Check poller role and runner configuration]
+  C -->|WAIT / HUMAN / webhook| W[Check timer, assignee or signal]
+  Q -->|yes| P[Is a worker polling the exact queue and domain?]
+  Q -->|no| L[Was it leased? Check worker, lease expiry and task history]
+  P -->|no| CFG[Fix queue, domain, credential or worker process]
+  P -->|yes| CAP[Check concurrency, semaphore, rate limit and quota]
+  R --> EXT[Check named destination, egress and circuit breaker]
+`}
+/>
+
+## Capture evidence before changing anything
+
+For one affected execution, keep:
+
+```text
+request id          response header or structured error
+execution id        UUID returned by start
+workflow name/ver   the immutable definition actually used
+task id + ref name  distinguish definition name from taskReferenceName
+principal           GET /v1/auth/whoami
+server roles        NODE_FLOW_ROLES for each replica
+time window         UTC, including timezone offset at the caller
+```
+
+Then collect the execution, history and queue view:
+
+```bash
+nf executions get "$EXECUTION_ID" --json > execution.json
+curl -sS -H "Authorization: Bearer $NF_API_KEY" \
+  "$NF_URL/v1/ns/$NF_NAMESPACE/executions/$EXECUTION_ID/history"
+curl -sS -H "Authorization: Bearer $NF_API_KEY" \
+  "$NF_URL/v1/ns/$NF_NAMESPACE/queues"
+```
+
+Do not start by editing the definition version used by the run: versions are
+immutable, and a new version cannot explain the state of an old execution.
+
+## The server does not start
+
+### `Invalid environment configuration`
+
+Boot validation reports every bad value in one error. Fix the whole list before
+restarting. Common cases:
+
+| Message or symptom | Meaning | Fix |
+|---|---|---|
+| `DATABASE_URL is required` | No database was selected | Supply an explicit Postgres URL; there is no safe default |
+| JWT secret must be at least 32 characters | Signing key is missing or weak | Generate a deployment-specific random value |
+| unknown role `decidr` | No process would own the intended loop | Use `api`, `decider`, `poller`, comma-separated |
+| malformed JSON on a connection map | Shell quoting changed the JSON | Validate locally with `jq`; quote the entire value once |
+| S3 needs a bucket | Blob store selected without complete config | Add `NODE_FLOW_BLOB_S3` or return to `fs` for one-node use |
+| secret storage refuses writes | No master key is configured | Set `NODE_FLOW_SECRET_KEYS`; plaintext fallback is intentionally absent |
+
+### Database connection succeeds, readiness fails
+
+Compare the three health surfaces:
+
+```bash
+curl -i http://localhost:3000/v1/health/live
+curl -i http://localhost:3000/v1/health/ready
+curl -i http://localhost:3000/v1/health
+```
+
+- **Live fails:** the process is not serving; inspect the container exit and
+  startup log.
+- **Live passes, ready fails:** a required dependency or migration state is not
+  ready. Do not route traffic yet.
+- **Both pass, detailed health degrades:** the API can serve, but a background
+  loop or queue is unhealthy. Inspect the named check rather than restarting
+  the API role.
+
+Postgres must be 18 or newer. In Docker, make sure host tools use port `5433`
+for the repository compose file; connecting to a different local server on
+`5432` often looks like a password error.
+
+## `401` and `403`
+
+`401` means no acceptable identity was established. `403` means the identity
+was established and lacks authority.
+
+```bash
+curl -i -H "Authorization: Bearer $NF_API_KEY" \
+  "$NF_URL/v1/auth/whoami"
+```
+
+Check, in order:
+
+1. Header spelling and scheme. Native API keys use `Authorization: Bearer …`.
+2. Base URL. Native endpoints begin at `/v1`; the Conductor JavaScript SDK uses
+   `<origin>/conductor`. Clients expecting an API-root URL use
+   `<origin>/conductor/api`. See [connection settings](/docs/guide/conductor#connection-settings).
+3. Namespace. The credential namespace must match `/ns/{namespace}`.
+4. Scope. Reading definitions does not imply starting executions or polling.
+5. Resource and tag grants. A general scope can still be narrowed by a grant.
+6. Expiry and revocation for JWTs and sessions.
+
+For Conductor clients, `X-Authorization` is a raw token—no `Bearer` prefix.
+The compatibility guard accepts the SDK's wire shape; sending that header to a
+native `/v1` endpoint is the wrong protocol.
+
+## Start returned no execution id
+
+### `404`
+
+Check the workflow name and version in the same namespace. Omitting a version
+selects the latest registered version, not a draft in the visual editor.
+
+### `409`
+
+The usual causes are:
+
+- an idempotency key already belongs to another input;
+- `maxConcurrentExecutions` is full;
+- an immutable workflow version is being registered again;
+- a task report carries an expired or replaced lease token.
+
+Keep the structured error `code` and `details`. Do not branch application logic
+on the English `message`.
+
+### `429`
+
+Admission or a namespace quota refused the request. A workflow rate limit may
+queue a run instead, so distinguish a rejected HTTP request from an execution
+whose admission state is waiting.
+
+## The workflow stays `RUNNING`
+
+Read history before forcing a decision:
+
+```bash
+nf executions get "$EXECUTION_ID" --json
+curl -sS -X POST -H "Authorization: Bearer $NF_API_KEY" \
+  "$NF_URL/v1/ns/$NF_NAMESPACE/executions/$EXECUTION_ID/decide"
+```
+
+If forcing a decision unblocks the run, preserve the original time window and
+inspect the decide-queue and decider logs. The manual action is a recovery, not
+the root-cause fix.
+
+| Last visible state | Likely boundary |
+|---|---|
+| No tasks exist | Decider role absent, decide queue not consumed, or definition failed before scheduling |
+| Terminal task exists, downstream absent | Completion did not enqueue evaluation, or decider is behind |
+| `WAIT` remains beyond its time | Poller role/timer sweeper absent or overloaded |
+| `JOIN` waits forever | A branch head did not reach a terminal state; inspect the named refs and iterations |
+| Sub-workflow terminal, parent waiting | Child outcome was not applied to the parent; inspect parent and child history together |
+| Workflow paused | Pause is non-terminal and intentionally suppresses progress until resume |
+| Failure workflow absent | Check the failure workflow name/version and the original failure history |
+
+Repeated evaluations are safe. A missing evaluation is not. Queueing one
+manually is appropriate recovery after collecting evidence.
+
+## A `SIMPLE` task never reaches the worker
+
+### Confirm the exact queue
+
+The queue is the task definition name, optionally suffixed by its domain. It is
+not the task reference name.
+
+```text
+name              charge_card
+taskReferenceName charge_primary
+domain            eu-west
+queue             charge_card:eu-west
+```
+
+Domain precedence is: explicit task route, `*` route, inherited sub-workflow
+route, then no domain. Compare the execution's resolved route with the worker's
+configured queue.
+
+### Separate backlog from no poller
+
+- Depth above zero + no recent poller: worker process, URL, domain or auth.
+- Depth above zero + active poller: concurrency, semaphore, rate limit, quota,
+  or lease count.
+- Depth zero + task scheduled: it may already be leased. Inspect task status,
+  worker id and lease expiry.
+- Depth zero + no task: go back to the decider and workflow history.
+
+### Check server-side gates
+
+All execution controls are enforced at dequeue; changing SDK settings cannot
+bypass them. Look for:
+
+- `concurrentExecLimit` on the task definition;
+- a named semaphore with every permit held;
+- task rate-limit tokens exhausted;
+- namespace quota or workflow `maxConcurrentTasks`;
+- `scheduleToStartTimeout` already expired the task.
+
+## The worker receives work but cannot complete it
+
+| Response | Interpretation |
+|---|---|
+| `400` | Report shape, status or output violates the contract/schema |
+| `401` | Worker credential is missing, expired or malformed |
+| `403` | Credential cannot update this queue/task/namespace |
+| `404` | Wrong task id or namespace; do not treat as retryable success |
+| `409` | Lease fencing rejected a stale worker or duplicate transition |
+
+Heartbeat before the lease expires when work can run longer than
+`leaseSeconds`. A heartbeat extends ownership; it does not complete the task.
+After a network timeout on report, read the task before repeating a non-idempotent
+side effect. Reporting the same terminal result can be safe; performing the
+business action twice may not be.
+
+Use the task id as the idempotency key in the external system when possible.
+An attempt number distinguishes retries when each attempt must be recorded.
+
+## A system task fails
+
+System tasks require the `poller` role. A definition may validate even when the
+operator has deliberately not configured its destination; execution then
+fails visibly rather than using a hidden default.
+
+### HTTP and HTTP_POLL
+
+- `destination refused` or private-address errors: SSRF protection blocked the
+  resolved address or a redirect. Add the precise host to the allowlist only
+  after verifying it.
+- Retry on a `4xx` is usually wrong; inspect the task's retry classification.
+- HTTP_POLL yields between attempts. A long gap may be its next poll time, not
+  a consumed runner slot.
+- Circuit open means recent calls crossed the configured failure ratio. Fix the
+  destination before forcing more traffic.
+
+### JDBC, gRPC, email, brokers and AI
+
+Confirm that the **name** in the task input exists in the corresponding
+environment map. Then check that the poller replica has that configuration;
+configuring only the API role does not configure the process that runs the task.
+
+For broker event handlers, use a real broker when diagnosing consumer-group,
+acknowledgement or redelivery behaviour. An HTTP stub cannot reproduce those
+semantics.
+
+### INLINE and jq
+
+Timeout and memory/output limits are hard boundaries. Increasing them expands
+the work one task may monopolize. First confirm the program terminates and its
+output is bounded; then adjust the specific limit, not global task concurrency.
+
+## A task is going wrong and you want it stopped
+
+Pausing the workflow stops the decider scheduling anything *new*; it does not
+recall a task already queued or leased. To stop a specific one:
+
+```bash
+nf executions cancel-task <id> <task-ref>
+```
+
+That marks it `CANCELED`, releases its permits and timers, and pauses the run
+around it so nothing else moves while you look.
+
+It is not recorded as a failure, which matters if you are watching failure
+rates: no retry is spent and the `failureWorkflow` does not run. An operator
+intervening should not appear in your reports as the workflow failing.
+
+<Callout type="warn">
+  **Your worker keeps running.** node-flow releases the lease, so the result is
+  refused when the worker reports — correctness holds — but the process itself
+  is untouched and the work continues to completion. If a task can cause damage
+  that must be stopped mid-flight, the worker has to check for that itself;
+  there is no server-side kill.
+</Callout>
+
+## Only some tasks need to run again
+
+After fixing a worker, `rerun` is usually too blunt — it discards everything
+from a point onward. To re-run specific tasks:
+
+```bash
+nf executions pause <id>          # required; see below
+nf executions rerun-tasks <id> transcribe
+```
+
+By default **only the named tasks run again**. Anything that consumed their
+output keeps the result it already has, which means that result was computed
+from an output that no longer exists. The command prints which tasks those are:
+
+```
+stale — still holding output from the run being replaced:
+  transcreate, speech_generate
+```
+
+If that is wrong for your case — usually it is, when the downstream work is
+derived rather than independent — use `--cascade`, which re-runs the dependents
+too.
+
+| You want | Use |
+|---|---|
+| One artifact regenerated, nothing else touched | `rerun-tasks <ref>` |
+| The task and everything derived from it | `rerun-tasks <ref> --cascade` |
+| Everything from a point onward, regardless of dependency | `rerun --fromTaskRef <ref>` |
+
+The workflow must be paused or finished. A `409` saying to pause first is not a
+quirk: re-running a task while its downstream is still executing races the
+decider for the task frontier and a worker for a row about to be deleted.
+
+Dependency is computed from the compiled definition, not from timing — a
+parallel branch that merely started later is not swept up, and a task reading
+another's output across a fork is, even with no control-flow edge between them.
+
+## Payload and storage failures
+
+Payloads above `NODE_FLOW_PAYLOAD_THRESHOLD_BYTES` are offloaded. In a
+multi-replica deployment, `fs` is only correct when every replica sees the same
+durable mount. Prefer S3-compatible storage otherwise.
+
+Typical pattern: the API accepts a run, then a decider or worker-facing replica
+cannot read its payload. If small payloads succeed and large ones fail, compare
+blob-store configuration, bucket permissions, endpoint reachability and prefix
+across **every role**.
+
+Postgres rejects NUL bytes in JSON strings. node-flow sanitizes supported
+payload paths; if an external integration returns binary data, store or encode
+it rather than forcing raw bytes into JSON.
+
+## Conductor SDK compatibility
+
+For a complete walkthrough, see [Conductor compatibility](/docs/guide/conductor).
+For the JavaScript SDK, use this base URL:
+
+```ts
+const config = {
+  serverUrl: 'https://node-flow.example.com/conductor',
+  keyId: process.env.CONDUCTOR_KEY_ID,
+  keySecret: process.env.CONDUCTOR_KEY_SECRET,
+};
+```
+
+The JavaScript SDK builds `/api/token` and other `/api/*` paths itself. Use the
+prefix above rather than depending on a version's trailing-`/api` normalization.
+Python and Java clients expecting an API-root URL use `…/conductor/api` instead.
+The credential selects the namespace.
+
+When registration fails, read the SDK error message: compatibility validation
+flattens offending schema paths into it because several Conductor SDKs ignore
+structured error details. Test migration with the real builder and client—not
+hand-written JSON that approximates what the SDK emits.
+
+Search compatibility is intentionally partial because Conductor exposes an
+Elasticsearch query dialect while node-flow searches Postgres. Prefer native
+search when porting a query that is not in the supported subset.
+
+## The installation is slow
+
+Measure before adding infrastructure:
+
+| Signal | What it usually means |
+|---|---|
+| Decide queue grows; task queue stays small | Decider CPU or expensive evaluations |
+| Task queue grows; workers all busy | Worker fleet capacity |
+| Task queue grows; no pollers | Deployment/configuration fault, not capacity |
+| Timers overdue grows | Poller role overloaded or unavailable |
+| Outbox backlog grows | Destination/relay problem |
+| Postgres WAL rises with throughput | Expected queue churn; check storage bandwidth and vacuum |
+| Table bloat and dequeue latency rise | Autovacuum is not keeping up with hot queue tables |
+| Only large workflows slow | Inspect expression refs/frontier size and payload offload |
+
+Scale roles independently: add API replicas for connections, deciders for
+evaluation work, and pollers for timers/runners/outbox. Do not add Redis merely
+because the task queue is slow; first prove the database queue is the limiting
+component rather than a CPU-bound Node process or an absent poller.
+
+## Ask for help with a safe diagnostic bundle
+
+Include:
+
+- node-flow version and deployment topology;
+- redacted environment **names and non-secret values**;
+- health response and relevant metrics window;
+- one execution and history response with business payloads removed;
+- queue depth, active worker and role information;
+- structured error code/details and request id;
+- the minimal immutable workflow definition that reproduces it.
+
+Never include API keys, service-account secrets, session cookies, webhook URLs,
+master keys, database URLs with passwords, or resolved secret values.
+
+## Next
+
+- [Execution controls](/docs/guide/execution-controls) explains every gate that
+  can intentionally delay work.
+- [Workers](/docs/guide/workers) covers leases, heartbeats and idempotency.
+- [Self-hosting](/docs/guide/self-hosting) covers health, metrics and scaling.
+- [Security model](/docs/guide/security) explains authentication and refusal
+  boundaries.

@@ -1,0 +1,183 @@
+node-flow License 1.0
+
+Copyright © 2026 Dwaipayan Sardar. All rights reserved.
+
+IMPORTANT — THIS IS NOT AN OPEN SOURCE LICENCE. The source is published so that
+you can read it, run it and rely on it. It does not grant the right to publish
+your own version of it. If you need terms this licence does not give you, they
+are available by agreement: https://node-flow.dev
+
+--------------------------------------------------------------------------------
+1. DEFINITIONS
+--------------------------------------------------------------------------------
+
+"Software" means node-flow, in source or compiled form, including its
+documentation, together with any update the Licensor publishes.
+
+"Licensor" means the copyright holder named above.
+
+"You" means the individual or legal entity exercising the permissions granted
+here. If you are acting for an organisation, "you" includes that organisation
+and every entity it controls, is controlled by, or is under common control with.
+
+"Unmodified" means byte-for-byte identical to a version the Licensor published,
+including its notices. Configuration supplied to the Software — environment
+variables, workflow definitions, task definitions, secrets, connection strings
+and similar inputs — is not a modification. Neither is building the Software
+from unmodified source using the build process it ships with.
+
+"Official Repository" means the source repository the Licensor designates as
+canonical for node-flow.
+
+"Modify" means to alter, adapt, translate or build upon the Software, or to
+create any work derived from it.
+
+--------------------------------------------------------------------------------
+2. WHAT YOU MAY DO
+--------------------------------------------------------------------------------
+
+Subject to section 3, the Licensor grants you a worldwide, royalty-free,
+non-exclusive, non-transferable, non-sublicensable licence to:
+
+2.1  View, read and study the Software.
+
+2.2  Download and copy the Software.
+
+2.3  Run the Software, Unmodified, for any purpose — including commercially,
+     including inside a product or service you sell, and including for the
+     benefit of your customers. No separate commercial licence is required to
+     run it.
+
+2.4  Redistribute the Software Unmodified and in full, with this licence and all
+     notices intact. This is what makes it lawful to install a published package
+     from a registry, pull a published container image, or mirror either
+     internally.
+
+2.5  Modify your own copy, for your own deployment, provided the result is never
+     distributed, published, sold or otherwise made available to anyone outside
+     your organisation, and is not offered to third parties as a service
+     distinguishable from the Unmodified Software.
+
+     This exists so that nobody has to wait for the Licensor to fix a
+     vulnerability, adjust a log level, or stop an incident. It is not a general
+     right to maintain a private variant; a modification you keep indefinitely
+     and build upon is the thing section 3.1 prohibits, wearing a different hat.
+     Send it back under 2.6.
+
+2.6  Modify the Software, and create the copy or fork your code-hosting platform
+     requires, **solely** to prepare a change you submit to the Official
+     Repository.
+
+     This permission is for the act of contributing. It ends when the
+     contribution is submitted, withdrawn or rejected, and it never extends to
+     running that copy in production, distributing it, publishing it as an
+     alternative to the Software, or keeping it as an independent line of
+     development.
+
+--------------------------------------------------------------------------------
+3. WHAT YOU MAY NOT DO
+--------------------------------------------------------------------------------
+
+3.1  Distribute, publish, host for download, or otherwise make available to any
+     third party a modified version of the Software, in source or compiled form.
+
+3.2  Publish a fork, variant, successor or derivative of the Software as a
+     separate project, under any name, except as section 2.6 permits.
+
+3.3  Sell, licence, rent or otherwise supply for value a modified version of the
+     Software.
+
+3.4  Remove, obscure or alter any copyright, licence or attribution notice.
+
+3.5  Use the Licensor's names, marks or logos to endorse or promote anything,
+     without written permission. Stating accurately that your product uses
+     node-flow is permitted.
+
+--------------------------------------------------------------------------------
+4. CONTRIBUTIONS
+--------------------------------------------------------------------------------
+
+By submitting a contribution to the Official Repository you grant the Licensor a
+perpetual, worldwide, royalty-free, irrevocable licence to use, reproduce,
+modify, distribute, sublicense and relicense it as part of the Software, and you
+confirm you have the right to do so.
+
+You keep the copyright in what you wrote. This clause does not take it; it lets
+the Licensor ship it.
+
+--------------------------------------------------------------------------------
+5. TERM AND TERMINATION
+--------------------------------------------------------------------------------
+
+5.1  This licence applies for as long as you comply with it.
+
+5.2  It terminates automatically if you breach section 3. If the breach is
+     curable and you cure it within 30 days of becoming aware of it — whether
+     you were notified or not — the licence is reinstated as of the cure.
+
+5.3  On termination you must stop using and distributing the Software and
+     destroy the copies you hold. Section 4 and sections 6 to 8 survive.
+
+--------------------------------------------------------------------------------
+6. NO WARRANTY
+--------------------------------------------------------------------------------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, TITLE AND NONINFRINGEMENT.
+
+--------------------------------------------------------------------------------
+7. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------------
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+This includes any loss of profit, revenue, data or goodwill, and any indirect,
+incidental, special, consequential or punitive damages, even if the Licensor was
+advised of the possibility.
+
+--------------------------------------------------------------------------------
+8. GENERAL
+--------------------------------------------------------------------------------
+
+8.1  No rights are granted other than those stated above. In particular, no
+     patent licence is granted by implication or estoppel.
+
+8.2  If any provision is held unenforceable, it is limited to the minimum extent
+     necessary and the rest remains in force.
+
+8.3  The Licensor's failure to enforce a provision is not a waiver of it.
+
+--------------------------------------------------------------------------------
+IN PLAIN LANGUAGE
+--------------------------------------------------------------------------------
+
+This summary is not the licence. Where they differ, the text above governs.
+
+  Read the source                                              yes
+  Download and copy it                                         yes
+  Run it, including commercially                               yes
+  Ship it inside a product you sell, unmodified                yes
+  Redistribute it unmodified — npm, containers, mirrors        yes
+  Patch your own deployment and keep it to yourself            yes
+  Fork it to send a pull request                               yes
+  Publish a fork, or any modified version                      no
+  Sell a modified version                                      no
+  Redistribute a modified version                              no
+
+The short version: use it freely, including to make money. Improvements come
+back here rather than becoming somebody else's project.
+
+--------------------------------------------------------------------------------
+NOTE FOR THE LICENSOR — REMOVE BEFORE PUBLISHING
+--------------------------------------------------------------------------------
+
+This licence was drafted to match a specific set of permissions and has NOT been
+reviewed by a lawyer. It is bespoke, which means no court has interpreted it and
+no legal team already knows what it means — both of which a standard licence
+gives you for free. Have a solicitor read it before you publish under it or
+accept contributions on its terms, paying particular attention to section 4
+(contributor grant), section 5.2 (cure period) and section 7 (liability), whose
+enforceability varies by jurisdiction.

@@ -1,0 +1,225 @@
+name: Release
+
+# A tag is the trigger, and the tag is the version.
+#
+# Nothing here reads a version from anywhere else: `v1.0.0` publishes 1.0.0, and
+# the job fails if the workspace does not already say 1.0.0. Deriving the
+# version from the tag *and* from package.json is how a release ends up with an
+# image and an npm package that disagree.
+on:
+  push:
+    tags:
+      - 'v*'
+  # So the whole thing can be rehearsed without tagging. Publishing steps are
+  # skipped on a dry run; everything that can fail still runs.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and check, publish nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # create the GitHub release
+  packages: write # push to GHCR
+  id-token: write # npm provenance
+
+env:
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+
+jobs:
+  # Never publish something that has not passed the same gates as a pull
+  # request. A tag is not a reason to skip them — it is the reason to run them.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: The tag must match the version the workspace declares
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          DECLARED=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$DECLARED" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package version $DECLARED"
+            exit 1
+          fi
+          # Every workspace package moves in lockstep, so a stale one is a bug.
+          for manifest in packages/*/package.json; do
+            VERSION=$(node -p "require('./$manifest').version")
+            if [ "$VERSION" != "$DECLARED" ]; then
+              echo "$manifest is at $VERSION, expected $DECLARED"
+              exit 1
+            fi
+          done
+
+      - run: pnpm nx run-many -t build test lint typecheck
+
+  # The images, exercised before they are pushed. This is the gate that catches
+  # what the suite above structurally cannot — see scripts/smoke.mjs.
+  smoke:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+
+      - run: docker compose -f docker/docker-compose.yml up -d --build
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:3000/v1/health/ready > /dev/null && exit 0
+            sleep 5
+          done
+          echo "server never became ready"
+          exit 1
+
+      - name: Create a credential
+        run: |
+          TOKEN=$(DATABASE_URL=postgres://nodeflow:nodeflow@localhost:5433/nodeflow \
+            pnpm --silent nf bootstrap --namespace default --json | node -e '
+              let s = "";
+              process.stdin.on("data", (d) => (s += d));
+              process.stdin.on("end", () => process.stdout.write(JSON.parse(s).token));
+            ')
+          echo "::add-mask::$TOKEN"
+          echo "KEY=$TOKEN" >> "$GITHUB_ENV"
+
+      - run: node scripts/smoke.mjs
+
+      - name: Container logs
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs --no-color
+
+  images:
+    runs-on: ubuntu-latest
+    needs: smoke
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: env.DRY_RUN != 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `github.repository` rather than a hard-coded name, so a fork publishes
+      # to its own namespace instead of failing on someone else's.
+      - name: Image names
+        run: |
+          echo "SERVER_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/server" >> "$GITHUB_ENV"
+          echo "UI_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/ui" >> "$GITHUB_ENV"
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/server.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DRY_RUN != 'true' }}
+          tags: |
+            ${{ env.SERVER_IMAGE }}:${{ env.VERSION }}
+            ${{ env.SERVER_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ui.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DRY_RUN != 'true' }}
+          tags: |
+            ${{ env.UI_IMAGE }}:${{ env.VERSION }}
+            ${{ env.UI_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  npm:
+    runs-on: ubuntu-latest
+    needs: smoke
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm nx run-many -t build
+
+      # npm shows the README that sits in the package, and the licence it finds
+      # there. Both live at the repository root, so each package gets a copy at
+      # publish time rather than eight copies being kept in step by hand.
+      - name: Give each package the licence and readme
+        run: |
+          for dir in packages/*/; do
+            node -e "process.exit(require('./${dir}package.json').private ? 0 : 1)" || {
+              cp LICENSE "$dir"
+              cp README.md "$dir"
+            }
+          done
+
+      # `--no-git-checks` because the copies above leave the tree dirty, and
+      # because the tag has already been verified against every manifest.
+      # pnpm rewrites `workspace:*` to the real version as it packs.
+      - name: Publish
+        if: env.DRY_RUN != 'true'
+        run: pnpm -r publish --access public --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run — pack instead
+        if: env.DRY_RUN == 'true'
+        run: pnpm -r exec npm pack --dry-run
+
+  github_release:
+    runs-on: ubuntu-latest
+    needs: [images, npm]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v5
+
+      # The section for this version out of CHANGELOG.md, so the release notes
+      # and the changelog cannot disagree.
+      - name: Notes for this version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="## $VERSION" '
+            $0 == v { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        if: env.DRY_RUN != 'true'
+        with:
+          body_path: release-notes.md
+          draft: true
+          generate_release_notes: false

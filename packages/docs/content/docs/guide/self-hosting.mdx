@@ -1,0 +1,946 @@
+---
+title: Self-hosting
+description: Running node-flow somewhere real — managed Postgres, published images, role splitting, health, backups and observability.
+---
+
+One image, one database. This page covers running that somewhere that matters:
+against a managed Postgres, from published images with no checkout of this
+repository, split across roles, with health checks and metrics wired up.
+
+## What you need
+
+| | |
+|---|---|
+| **PostgreSQL 18 or newer** | Non-negotiable. The server refuses to boot against anything older. |
+| **A container runtime** | The images are `linux/amd64` and `linux/arm64`. |
+| **Node 24** | Only if you run from source rather than the image. |
+| Shared object storage | Only for multi-node installs — see [payload offloading](#payload-offloading). |
+
+Everything else — queue, timers, state, outbox, search, vector indexes, audit —
+lives in that one database.
+
+---
+
+## Using an external or managed Postgres
+
+This is the normal production shape: a managed instance (RDS, Cloud SQL, Neon,
+Aurora, Azure Database) that you back up and monitor with everything else.
+
+### Why Postgres 18 specifically
+
+The server checks at boot and refuses to start otherwise:
+
+```
+node-flow requires PostgreSQL 18 or newer for uuidv7() and async I/O;
+found server_version_num=170004
+```
+
+| Feature | Used for |
+|---|---|
+| **`uuidv7()`** | Every primary key. Time-ordered ids are what make keyset pagination correct on continuously-inserted tables, and what keep index locality sane under insert load. Used as a **column default in DDL**, so there is no application-side fallback. |
+| **Declarative range partitioning** | `Timers` (hourly, 48 kept), `WorkflowExecutions`, `WorkflowEvents` (monthly, 12 kept) and `AuditEvents` (monthly, 84 kept). A partition manager creates them ahead and drops expired ones, so retention is an instant `DROP TABLE`. |
+| **`io_method=worker` (async I/O)** | Speeds up exactly the vacuum and scan paths the queue stresses. Not required, but the reason the stock compose file sets it. |
+
+Also used, and available on every supported version: `FOR UPDATE SKIP LOCKED`,
+`ON CONFLICT DO NOTHING`, transaction-scoped advisory locks
+(`pg_advisory_xact_lock`), `LISTEN`/`NOTIFY`, JSONB, and PL/pgSQL for one
+trigger function.
+
+<Callout type="warn">
+  Check your provider's version before anything else. At the time of writing,
+  Postgres 18 is available on RDS, Cloud SQL, Neon and self-managed installs; some
+  managed offerings lag by a major version or two. There is no compatibility mode
+  — `uuidv7()` is a DDL default, so a 17 database cannot even run the first
+  migration.
+</Callout>
+
+### `DATABASE_URL`
+
+A standard libpq connection URI. There is **no default**, deliberately: a server
+that silently starts against `localhost/postgres` because the real URL was
+missing is worse than one that refuses to boot.
+
+```
+postgres://USER:PASSWORD@HOST:PORT/DATABASE?PARAMETER=VALUE
+```
+
+```bash
+# Plain
+DATABASE_URL=postgres://nodeflow:s3cret@db.internal:5432/nodeflow
+
+# Require TLS and verify the server certificate against a CA bundle
+DATABASE_URL=postgres://nodeflow:s3cret@db.internal:5432/nodeflow?sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds-ca.pem
+
+# Percent-encode anything special in the password:  @ -> %40,  / -> %2F,  : -> %3A
+DATABASE_URL=postgres://nodeflow:p%40ss%2Fword@db.internal:5432/nodeflow
+
+# A specific schema, and a statement timeout as a safety net
+DATABASE_URL=postgres://nodeflow:s3cret@db.internal:5432/nodeflow?options=-c%20search_path%3Dnodeflow
+```
+
+The URL is handed to `pg` as a `connectionString`, so every parameter `pg`
+understands works, including `sslmode`, `sslrootcert`, `sslcert`, `sslkey`,
+`application_name` and `options`.
+
+| Setting | Where |
+|---|---|
+| Pool size per process | `DATABASE_MAX_CONNECTIONS`, default 20 |
+| Connection timeout | 10 s, fixed — fail fast rather than queue forever behind an exhausted pool |
+| Idle timeout | 10 s, fixed |
+
+<Callout type="info">
+  **Budget connections across roles.** Each process opens up to
+  `DATABASE_MAX_CONNECTIONS`, and a decider holds one per in-flight evaluation.
+  Four api + two decider + two poller replicas at the default is 160 connections
+  before anything else connects. Set `max_connections` accordingly, or put
+  PgBouncer in front — in **session** or **transaction** pooling mode.
+</Callout>
+
+<Callout type="warn">
+  If you use PgBouncer in **transaction** mode, the `LISTEN`/`NOTIFY` channels
+  that power long-poll wake-ups and the live execution stream will not work
+  through it. Both degrade to their backstop polls rather than breaking, but
+  task-start latency rises. Give the notifier a direct connection, or use
+  session pooling.
+</Callout>
+
+### TLS
+
+<Tabs items={['AWS RDS / Aurora', 'Google Cloud SQL', 'Neon / Supabase', 'Self-managed']}>
+
+<Tab value="AWS RDS / Aurora">
+
+```bash
+# Ship the bundle into the image or mount it
+curl -o /etc/ssl/certs/rds-ca.pem \
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
+DATABASE_URL="postgres://nodeflow:$PW@mydb.abc123.eu-west-1.rds.amazonaws.com:5432/nodeflow?sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds-ca.pem"
+```
+
+</Tab>
+
+<Tab value="Google Cloud SQL">
+
+Either the Cloud SQL Auth Proxy as a sidecar:
+
+```bash
+DATABASE_URL=postgres://nodeflow:$PW@127.0.0.1:5432/nodeflow
+```
+
+or a direct TLS connection with the server CA:
+
+```bash
+DATABASE_URL="postgres://nodeflow:$PW@10.x.x.x:5432/nodeflow?sslmode=verify-ca&sslrootcert=/secrets/server-ca.pem"
+```
+
+</Tab>
+
+<Tab value="Neon / Supabase">
+
+Both terminate TLS with a publicly-trusted certificate, so the system trust
+store is enough:
+
+```bash
+DATABASE_URL="postgres://nodeflow:$PW@ep-xyz.eu-central-1.aws.neon.tech/nodeflow?sslmode=require"
+```
+
+Check the Postgres major version they give you — see the callout above.
+
+</Tab>
+
+<Tab value="Self-managed">
+
+```bash
+DATABASE_URL="postgres://nodeflow:$PW@db.internal:5432/nodeflow?sslmode=verify-full&sslrootcert=/etc/ssl/certs/internal-ca.pem"
+```
+
+`sslmode=require` encrypts but does **not** verify the server, which leaves the
+connection open to an active attacker. Prefer `verify-full`.
+
+</Tab>
+
+</Tabs>
+
+### The role and its permissions
+
+node-flow's migrator does real DDL: creates tables, indexes, a PL/pgSQL trigger
+function, and partitions that a background loop keeps creating and dropping
+forever. The simplest correct arrangement is a role that **owns its own
+database or schema**.
+
+```sql
+-- As a superuser, once.
+CREATE ROLE nodeflow LOGIN PASSWORD 'change-me';
+CREATE DATABASE nodeflow OWNER nodeflow;
+
+\c nodeflow
+
+-- Optional but tidy: keep node-flow out of `public`.
+CREATE SCHEMA nodeflow AUTHORIZATION nodeflow;
+ALTER ROLE nodeflow SET search_path = nodeflow;
+
+-- Optional: native vector distance for the AI tasks. If this is skipped, the
+-- migration notices and falls back to a pure-SQL cosine similarity, so the
+-- feature still works.
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+What the role must be able to do:
+
+| Capability | Needed for |
+|---|---|
+| `CREATE` on the schema | Migrations: tables, indexes, sequences |
+| `CREATE FUNCTION` / `CREATE TRIGGER` | The `WorkflowEvents` notify trigger, and the cosine-similarity fallback |
+| `CREATE TABLE` / `DROP TABLE` **at runtime** | The partition manager, forever — not just at migration time |
+| `LISTEN` / `NOTIFY` | Long-poll wake-ups and the live execution stream. Granted to every role by default. |
+| `pg_advisory_xact_lock` | Admission control and rate-limit windows. Granted to every role by default. |
+| `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Everything else |
+| `CREATE EXTENSION` | **Optional.** pgvector only. The migration wraps it in an exception handler and falls back cleanly. |
+
+<Callout type="warn">
+  A role with only `SELECT/INSERT/UPDATE/DELETE` on pre-created tables is **not**
+  enough. The partition manager creates next month's `WorkflowExecutions`
+  partition and drops expired ones as a routine background pass; without
+  `CREATE`, every row lands in the `DEFAULT` partition, retention becomes a
+  `DELETE` of millions of rows, and attaching a real partition later requires a
+  full scan of `DEFAULT` while holding a lock.
+</Callout>
+
+If your organisation insists on separating migration rights from runtime rights,
+run migrations as an owner role and grant the runtime role `CREATE` on the
+schema anyway — the partition manager needs it.
+
+### Running migrations
+
+<Tabs items={['At boot (default)', 'As a job', 'From the CLI']}>
+
+<Tab value="At boot (default)">
+
+`DATABASE_MIGRATE_ON_BOOT=true` is the default. Convenient for development and
+single-node deployments. The migrator is safe under a race — each migration is
+one transaction — but the *surprise* of schema changes landing on deploy should
+be a decision.
+
+</Tab>
+
+<Tab value="As a job">
+
+The right shape for a multi-replica rollout: run migrations once, then start
+pods with them disabled. The `nf` CLI is the tool that does this and exits — the
+server image does not carry it, so run it from a plain Node image.
+
+```yaml
+# Kubernetes: a Job that must complete before the Deployment rolls
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: node-flow-migrate
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: node:24-alpine
+          command:
+            - npx
+            - --yes
+            - '@node-flow-dev/cli@1.0.0'
+            - migrate
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: node-flow, key: databaseUrl } }
+```
+
+Then on every server pod:
+
+```yaml
+- name: DATABASE_MIGRATE_ON_BOOT
+  value: 'false'
+```
+
+<Callout type="warn">
+  **`DATABASE_MIGRATE_ON_BOOT=false` currently also skips first-install seeding
+  and both `LISTEN`/`NOTIFY` listeners.** A server started this way against a
+  brand-new database creates no namespace and no administrator, and its
+  long-poll wake-ups and live execution stream fall back to their backstop
+  polls (workers still get work; task-start latency rises).
+
+  So on a **fresh** install, either let the very first server boot with
+  migrations enabled and switch it off afterwards, or create the first
+  namespace and user with `nf bootstrap` / `nf create-user` before disabling it.
+  On an install that already has a namespace, only the listener degradation
+  applies.
+</Callout>
+
+</Tab>
+
+<Tab value="From the CLI">
+
+```bash
+# nf ships inside the server image; it is not on npm in 1.0
+docker run --rm -e DATABASE_URL ghcr.io/dsardar099/node-flow/server:1.0.0 nf migrate
+# Applied migrations:
+#   0036-ai
+#   0037-trace-context
+```
+
+`nf migrate` talks to the database directly rather than to a running server,
+because schema changes are a deliberate step rather than something to race
+across every replica.
+
+</Tab>
+
+</Tabs>
+
+**Readiness fails while the schema is behind the build**, naming the missing
+migrations — a replica running against a half-migrated database is worse than
+one that is simply down, because it accepts traffic and fails in ways that look
+like data corruption.
+
+### Postgres settings worth changing
+
+The queue is the hot path: it churns rows constantly, so autovacuum must run far
+more aggressively than the stock settings allow, or dead tuples accumulate
+faster than they are reclaimed and dequeue latency degrades.
+
+```ini
+autovacuum_vacuum_scale_factor = 0.02
+autovacuum_vacuum_cost_limit   = 2000
+autovacuum_naptime             = 10s
+io_method                      = worker     # Postgres 18 async I/O
+max_connections                = 200        # see the connection-budget note above
+log_min_duration_statement     = 500        # find slow queries before a load test does
+```
+
+On a managed instance these are parameter-group settings. The first three matter
+most.
+
+### Backups
+
+Ordinary Postgres backups are ordinary node-flow backups. There is no second
+thing to back up — **except** the blob store when `NODE_FLOW_BLOB_STORE` is set,
+which holds offloaded payloads referenced by rows in the database. Back up both,
+or restore an execution whose task inputs cannot be read.
+
+Point-in-time recovery works as you would expect. A restore brings back
+in-flight executions with their leases in whatever state they were: leases
+expire, tasks are reclaimed, the decider re-evaluates. That is the ordinary
+crash path, and it is exercised on every deploy.
+
+---
+
+## Docker Compose without this codebase
+
+A complete, standalone file using only published images. Paste it into
+`docker-compose.yml` and run it — nothing here references this repository.
+
+```yaml title="docker-compose.yml"
+name: node-flow
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nodeflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: nodeflow
+      # Deterministic collation, so ORDER BY is stable across machines.
+      POSTGRES_INITDB_ARGS: '--locale-provider=icu --icu-locale=en-US --encoding=UTF8'
+    ports:
+      # 5433 on the host, not 5432, so a Postgres you already run keeps its port.
+      # Nothing inside the compose network is affected: services reach each
+      # other on 5432 over the bridge regardless.
+      - '${NODE_FLOW_POSTGRES_PORT:-5433}:5432'
+    volumes:
+      # Postgres 18+ wants ONE mount at /var/lib/postgresql; data lands in a
+      # version subdirectory. Mounting .../data directly is the pre-18 layout
+      # and the image refuses to start on it.
+      - postgres-data:/var/lib/postgresql
+    command:
+      - postgres
+      # The queue churns rows constantly. Stock autovacuum cannot keep up and
+      # dequeue latency degrades as dead tuples accumulate.
+      - -c
+      - autovacuum_vacuum_scale_factor=0.02
+      - -c
+      - autovacuum_vacuum_cost_limit=2000
+      - -c
+      - autovacuum_naptime=10s
+      # Postgres 18 async I/O: helps exactly the vacuum and scan paths we stress.
+      - -c
+      - io_method=worker
+      - -c
+      - max_connections=200
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nodeflow -d nodeflow']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  server:
+    image: ghcr.io/OWNER/node-flow/server:1.0.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # ---- required -----------------------------------------------------
+      # No default, deliberately: a server that silently starts against the
+      # wrong database is worse than one that refuses to boot.
+      DATABASE_URL: postgres://nodeflow:${POSTGRES_PASSWORD}@postgres:5432/nodeflow
+      # >= 32 characters. Signs service-account access tokens. There is no
+      # development fallback: a hardcoded one is the most reliably exploited
+      # misconfiguration in this class of system.
+      NODE_FLOW_JWT_SECRET: ${NODE_FLOW_JWT_SECRET:?set NODE_FLOW_JWT_SECRET}
+
+      # ---- roles --------------------------------------------------------
+      # api = HTTP + worker polling + the dashboard's backend
+      # decider = the evaluation loop
+      # poller = timers, outbox relay, schedules, sweepers, system tasks
+      NODE_FLOW_ROLES: api,decider,poller
+      PORT: '3000'
+
+      # ---- first-run account --------------------------------------------
+      # Seeds a namespace and an administrator on a database with no namespaces.
+      # LEAVE NODE_FLOW_SEED_PASSWORD UNSET: the server then generates one per
+      # install and prints it ONCE at boot. NODE_FLOW_SEED=false turns seeding
+      # off entirely, for installs whose accounts come from an IdP.
+      NODE_FLOW_SEED: 'true'
+      NODE_FLOW_SEED_NAMESPACE: default
+      NODE_FLOW_SEED_EMAIL: admin@example.com
+
+      # ---- secrets ------------------------------------------------------
+      # `id:base64key`, 32 raw bytes, comma-separated during a rotation
+      # (the first seals; the rest still open what they sealed before).
+      #   openssl rand -base64 32
+      # Without this the server REFUSES to store secrets rather than keeping
+      # them in clear, and the Secrets screen returns 400.
+      NODE_FLOW_SECRET_KEYS: ${NODE_FLOW_SECRET_KEYS:?set NODE_FLOW_SECRET_KEYS}
+
+      # ---- payloads -----------------------------------------------------
+      # Anything larger than this is written to the blob store and the row
+      # carries a reference.
+      NODE_FLOW_PAYLOAD_THRESHOLD_BYTES: '262144'
+      # `fs` assumes every replica sees the same disk. More than one node
+      # without a shared mount needs `s3`.
+      NODE_FLOW_BLOB_STORE: fs
+      NODE_FLOW_BLOB_ROOT: /data/blobs
+
+      # ---- outbound HTTP ------------------------------------------------
+      # Off by default: this is the control that stops a workflow definition —
+      # which is user input — reaching cloud metadata or an internal admin panel.
+      NODE_FLOW_HTTP_ALLOW_PRIVATE: 'false'
+      # Exact hostnames always permitted, even with the guard on.
+      NODE_FLOW_HTTP_ALLOWED_HOSTS: ''
+
+      # ---- limits -------------------------------------------------------
+      NODE_FLOW_SYSTEM_TASK_CONCURRENCY: '20'
+      NODE_FLOW_MAX_POLL_SECONDS: '30'
+      NODE_FLOW_DEFAULT_LEASE_SECONDS: '60'
+      DATABASE_MAX_CONNECTIONS: '20'
+      DATABASE_MIGRATE_ON_BOOT: 'true'
+
+      # ---- optional: observability --------------------------------------
+      # NODE_FLOW_OTEL_ENABLED: 'true'
+      # OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # OTEL_SERVICE_NAME: node-flow
+
+      # ---- optional: integrations ---------------------------------------
+      # NODE_FLOW_SQL_DATASOURCES: '{"reporting":"postgres://reader:pw@warehouse:5432/analytics"}'
+      # NODE_FLOW_KAFKA_CLUSTERS:  '{"default":{"brokers":["kafka:9092"]}}'
+      # NODE_FLOW_SMTP_TRANSPORTS: '{"default":{"host":"smtp.example.com","port":587,"user":"…","pass":"…","from":"ops@example.com"}}'
+      # NODE_FLOW_CIRCUIT_BREAKER: '{"enabled":true}'
+    ports:
+      - '3000:3000'
+    volumes:
+      - blob-data:/data/blobs
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'node -e "fetch(''http://localhost:3000/v1/health/ready'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"'
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  ui:
+    image: ghcr.io/OWNER/node-flow/ui:1.0.0
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      # The dashboard reaches the API server-side, so the browser only ever
+      # talks to one origin and the session cookie needs no CORS.
+      NODE_FLOW_API_URL: http://server:3000
+      NODE_FLOW_UI_NAMESPACE: default
+      PORT: '3100'
+    ports:
+      - '3100:3100'
+
+volumes:
+  postgres-data:
+  blob-data:
+```
+
+Alongside it:
+
+```bash title=".env"
+POSTGRES_PASSWORD=a-long-random-string
+NODE_FLOW_JWT_SECRET=at-least-thirty-two-characters-long-please
+NODE_FLOW_SECRET_KEYS=k1:BASE64_OF_32_RANDOM_BYTES
+```
+
+```bash
+openssl rand -base64 32   # for NODE_FLOW_SECRET_KEYS, after the "k1:"
+openssl rand -hex 32      # for NODE_FLOW_JWT_SECRET
+docker compose up -d
+docker compose logs server | grep -A 10 'created your first administrator'
+```
+
+<Callout type="info">
+  Replace `OWNER` with the GitHub owner the images were published under. The
+  release workflow publishes `ghcr.io/<repository>/server` and
+  `ghcr.io/<repository>/ui`, tagged with the release version and `latest`, for
+  `linux/amd64` and `linux/arm64`. Pin the version tag in production; `latest`
+  is for trying it.
+</Callout>
+
+### Against a managed Postgres instead
+
+Drop the `postgres` service, the `depends_on`, and the `postgres-data` volume,
+and point `DATABASE_URL` at your instance:
+
+```yaml
+    environment:
+      DATABASE_URL: postgres://nodeflow:${PGPASSWORD}@mydb.abc123.eu-west-1.rds.amazonaws.com:5432/nodeflow?sslmode=verify-full&sslrootcert=/certs/rds-ca.pem
+    volumes:
+      - ./rds-ca.pem:/certs/rds-ca.pem:ro
+```
+
+---
+
+## Scaling: splitting the roles
+
+One image, role-selected at runtime with `NODE_FLOW_ROLES`. Building three
+images from one source tree would mean three things to keep in step and three
+chances for a deploy to run mismatched versions of the engine against one
+database.
+
+<Mermaid
+  title="A split deployment"
+  chart={`
+flowchart TB
+  LB[Load balancer / ingress] --> API1[server: NODE_FLOW_ROLES=api]
+  LB --> API2[server: NODE_FLOW_ROLES=api]
+  LB --> UI[ui]
+  WRK[Your worker fleets] -->|long-poll lease| LB
+
+  API1 --> PG[(PostgreSQL 18)]
+  API2 --> PG
+  UI --> API1
+
+  D1[server: NODE_FLOW_ROLES=decider] --> PG
+  D2[server: NODE_FLOW_ROLES=decider] --> PG
+  P1[server: NODE_FLOW_ROLES=poller] --> PG
+  P1 --> EXT[External systems:<br/>HTTP, SQL, gRPC, brokers, LLMs]
+`}
+/>
+
+| Role | Runs | Scale with |
+|---|---|---|
+| `api` | HTTP, worker long-polling, the dashboard's backend, the REST and MCP gateways. **No background loops** — request latency should never compete with a partition roll. | Number of workers and API callers |
+| `decider` | The evaluation loop, draining the decide queue. | Workflow volume and task-completion rate |
+| `poller` | Timers, the outbox relay, schedules, abandoned-lease reclaim, expired-permit sweeps, partition maintenance, payload GC, stuck-workflow sweeps, human-task escalation, **and the system-task executor**. | Volume of system tasks, timers and scheduled work |
+
+`api,decider,poller` in one process is the development default. An unset value
+means all three; an **invalid** value fails the boot rather than falling back,
+because silently running with no decider produces a cluster where every workflow
+starts and none progresses — and the cause is a typo nobody would think to look
+for.
+
+Every poller loop claims its work with `SKIP LOCKED` rather than assuming it is
+alone, so running several poller replicas is safe.
+
+### Sizing, from the included harness
+
+On a single machine, a chain workflow reaches roughly **58 workflows/s** with
+about **78 ms** of engine turnaround per step. At saturation, WAL sits near
+1 MB/s and the task queue never exceeds a couple of rows — **the limit is CPU in
+one Node process, not the database.** The lever is therefore the role split
+above, not a bigger Postgres.
+
+The honest ceiling on the architecture: Postgres-as-queue is comfortable into
+the low tens of thousands of tasks per second, and WAL volume, not lock
+contention, is the wall.
+
+### Graceful shutdown
+
+The container's `CMD` uses exec form, so PID 1 is `node` and `SIGTERM` reaches
+it. On shutdown the process finishes in-flight work, flushes the outbox, and
+releases leases promptly rather than letting them expire on a timeout. Give it a
+grace period of at least 30 seconds.
+
+Your **workers** need the same treatment — see
+[Workers → draining](/docs/guide/workers#the-typescript-sdk).
+
+---
+
+## Health endpoints
+
+Three, all unauthenticated, and the distinction between the first two is the
+part worth getting right because conflating them causes outages rather than
+preventing them.
+
+| Endpoint | Asks | Touches the database |
+|---|---|---|
+| `GET /v1/health/live` | "Is this process wedged?" | **No** |
+| `GET /v1/health/ready` | "Should traffic come here?" | Yes |
+| `GET /v1/health` | Both, plus queue depth | Yes |
+
+<Callout type="warn">
+  **Liveness must not touch the database.** A shared Postgres blip would
+  otherwise fail liveness on every replica at once and the orchestrator would
+  restart the entire fleet — turning a recoverable dependency failure into a full
+  outage.
+</Callout>
+
+```bash
+curl -s localhost:3000/v1/health/live
+# { "status": "ok", "uptimeSeconds": 4210 }
+
+curl -s localhost:3000/v1/health/ready
+# { "status": "ok", "checks": [
+#     { "name": "database",   "ok": true, "durationMs": 2 },
+#     { "name": "migrations", "ok": true, "detail": "schema up to date", "durationMs": 3 } ] }
+
+curl -s localhost:3000/v1/health
+# { "status": "ok", "checks": [...], "queues": { "decideQueue": 0 } }
+```
+
+Readiness returns **503** when a check fails, so an orchestrator that reads only
+the status code behaves correctly. A failing migration check names the missing
+migrations rather than counting them — the operator needs to know *which* one to
+run.
+
+Queue depth is reported by `/v1/health` but deliberately **does not** fail
+readiness: a deep queue means the system is behind, not that this replica is
+broken, and removing capacity at that moment is exactly wrong.
+
+```yaml title="Kubernetes probes"
+livenessProbe:
+  httpGet: { path: /v1/health/live, port: 3000 }
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet: { path: /v1/health/ready, port: 3000 }
+  periodSeconds: 5
+  failureThreshold: 3
+startupProbe:
+  httpGet: { path: /v1/health/ready, port: 3000 }
+  periodSeconds: 5
+  failureThreshold: 30     # migrations on a cold database take a moment
+```
+
+The `decider` and `poller` roles still serve HTTP, so the same probes work for
+them.
+
+---
+
+## Observability
+
+### Prometheus
+
+```
+GET /v1/metrics
+```
+
+**Authenticated**, unlike the usual unprotected `/metrics`: these gauges expose
+install-wide backlog and execution counts, which is exactly the shape of
+information a tenant should not be able to read about the cluster. Mint a key
+with only `metrics:read` — a long-lived scraper credential should not also be
+able to mint new ones.
+
+```bash
+curl -X POST "$NF_URL/v1/auth/api-keys" -H "x-api-key: $ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"name":"prometheus","scopes":["metrics:read"]}'
+```
+
+```yaml title="prometheus.yml"
+scrape_configs:
+  - job_name: node-flow
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ['node-flow-server:3000']
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/node-flow.key
+```
+
+#### Engine gauges
+
+Cluster-wide, collected from the database at scrape time (queue depth is not
+*this process's* queue depth), cached for a few seconds so several replicas
+scraped at once do not each hammer the same counts.
+
+| Metric | Meaning |
+|---|---|
+| `node_flow_decide_queue_depth` | Workflows waiting to be evaluated. The clearest measure of decider lag. |
+| `node_flow_decide_queue_oldest_seconds` | Age of the oldest pending evaluation. **Depth alone cannot tell a drained burst from a stall.** |
+| `node_flow_tasks_ready` | Tasks queued and visible to workers. |
+| `node_flow_tasks_leased` | Tasks currently held by a worker. |
+| `node_flow_tasks_delayed` | Tasks waiting out a retry backoff. Counted nowhere else, and *the* signal during a retry storm. |
+| `node_flow_timers_overdue` | Timers past their fire time but not yet swept. Rising means the sweeper is behind. |
+| `node_flow_outbox_pending` | Outbox events awaiting delivery. |
+| `node_flow_outbox_dead_lettered` | Events that exhausted their attempts. **Never expected to be non-zero.** |
+| `node_flow_workflows_running` | Executions in `RUNNING` or `PAUSED`. |
+
+#### Runner gauges
+
+Per replica, labelled by `runner`: what *this* process's loops have done.
+
+| Metric | |
+|---|---|
+| `node_flow_runner_passes_total` | Batches this runner has executed. |
+| `node_flow_runner_items_total` | Items it has processed. |
+| `node_flow_runner_errors_total` | Passes that threw. **A loop survives its own errors by design, so this is the only sign.** |
+
+Default Node metrics are included with the `node_flow_` prefix. Event-loop lag
+matters more here than in most services: the decider is single-threaded, so lag
+is the difference between a workflow advancing and it waiting, and it is the
+first thing to move when CPU-bound work leaks onto the main thread.
+
+#### Alerts worth having
+
+```yaml
+- alert: NodeFlowDeciderStalled
+  expr: node_flow_decide_queue_oldest_seconds > 60
+  for: 2m
+
+- alert: NodeFlowTimersBehind
+  expr: node_flow_timers_overdue > 100
+  for: 5m
+
+- alert: NodeFlowOutboxDeadLettered
+  expr: increase(node_flow_outbox_dead_lettered[10m]) > 0
+
+- alert: NodeFlowRunnerErrors
+  expr: increase(node_flow_runner_errors_total[10m]) > 0
+```
+
+### OpenTelemetry
+
+Off by default, because tracing sends data somewhere and where is a decision an
+operator makes rather than one an upgrade makes for them.
+
+```bash
+NODE_FLOW_OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20...
+OTEL_SERVICE_NAME=node-flow
+NODE_FLOW_VERSION=1.0.0
+```
+
+Everything except the on/off switch uses the **standard `OTEL_*` variables** the
+SDK already reads, so there is no second vocabulary for things that already have
+names.
+
+HTTP and `pg` are instrumented, and deliberately not the kitchen sink: those two
+are where this system's latency lives, and every extra instrumentation is
+startup cost plus another library patching the hot path. `/v1/health` and
+`/v1/metrics` are excluded, or the spans that matter would be buried under
+thousands that never will be.
+
+Trace context propagates into workflows: a leased task carries `traceparent`, so
+a worker's own spans can hang off the request that started the run. See
+[Workers → tracing](/docs/guide/workers#tracing).
+
+### The audit log
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/audit?limit=100"
+```
+
+Records changes **and refusals** — "who tried to read the production secrets and
+was refused" is the question an incident starts with, so a log that only contains
+successes answers the wrong half of it. Partitioned monthly and kept for 84
+months by default, because the question it answers is usually asked long after
+the executions involved have been pruned.
+
+---
+
+## Payload offloading
+
+Task and workflow inputs and outputs over `NODE_FLOW_PAYLOAD_THRESHOLD_BYTES`
+(default 256 KiB) are written to a blob store, with a reference in the row.
+
+| Store | Configure | Caveat |
+|---|---|---|
+| `fs` (default) | `NODE_FLOW_BLOB_ROOT`, default `.node-flow/blobs` | **Assumes every replica sees the same disk.** |
+| `s3` | `NODE_FLOW_BLOB_S3` | Any S3-compatible endpoint. |
+
+```bash
+# AWS, with the instance role or IRSA supplying credentials — the better shape,
+# because node-flow then holds no long-lived keys.
+NODE_FLOW_BLOB_STORE=s3
+NODE_FLOW_BLOB_S3='{"bucket":"nf-payloads","region":"eu-west-1","prefix":"prod/"}'
+
+# MinIO and friends
+NODE_FLOW_BLOB_S3='{"bucket":"payloads","endpoint":"http://minio:9000","forcePathStyle":true,"accessKeyId":"…","secretAccessKey":"…"}'
+```
+
+`NODE_FLOW_BLOB_STORE=s3` without a `bucket` fails at **boot**, with the rest of
+the configuration, instead of at the first payload large enough to offload —
+which could be days later.
+
+<Callout type="warn">
+  More than one node on `fs` without a shared mount will eventually produce a
+  task that cannot read a payload another server wrote. Generated images, audio
+  and video from the AI tasks are base64 and almost always over the threshold,
+  so any install using them is a multi-node install in this sense.
+</Callout>
+
+A payload garbage collector on the `poller` role removes orphans. Point the
+collector and the offloader at the same store — there is one function choosing
+it, so the choice cannot be made twice and differ.
+
+---
+
+## Security checklist
+
+<Steps>
+
+<Step>
+### Set a real `NODE_FLOW_JWT_SECRET`
+
+At least 32 characters, from a random source. There is no development fallback,
+on purpose.
+</Step>
+
+<Step>
+### Set `NODE_FLOW_SECRET_KEYS`, and rotate it
+
+`id:base64key` with 32 raw bytes. Without it the server refuses to store secrets
+rather than keeping them in clear. Two entries is what a rotation looks like in
+flight: the first seals, the rest still open what they sealed before.
+
+```bash
+NODE_FLOW_SECRET_KEYS='k2:NEW_BASE64_KEY,k1:OLD_BASE64_KEY'
+curl -X POST -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/secrets/rotate"
+```
+
+There is deliberately **no endpoint that returns a sealed value** — not for an
+admin, not with a confirmation.
+</Step>
+
+<Step>
+### Leave `NODE_FLOW_HTTP_ALLOW_PRIVATE=false`
+
+A workflow definition is user input. This is the control that stops one reaching
+cloud metadata or an internal admin panel. Name specific hosts with
+`NODE_FLOW_HTTP_ALLOWED_HOSTS` instead of turning the guard off.
+</Step>
+
+<Step>
+### Do not leave `NODE_FLOW_SEED_PASSWORD` set
+
+Unset, the server generates one per install and prints it once. Set
+`NODE_FLOW_SEED=false` where accounts come from an identity provider — an
+unexpected local administrator is then a finding rather than a convenience.
+</Step>
+
+<Step>
+### Keep `NODE_FLOW_GATEWAY_CORS_ORIGINS` empty unless you need it
+
+Empty means **no** CORS headers and therefore no cross-origin browser access. A
+gateway route runs a workflow, and the wrong origin list is a way for someone
+else's page to do that with a visitor's credentials. Exact origins only; `*` is
+deliberately not special-cased.
+</Step>
+
+<Step>
+### Scope credentials narrowly
+
+`queues:lease:charge` for a worker fleet, `metrics:read` for a scraper,
+`executions:start` for a caller. `admin` is not a default. `platform:admin` is
+the one scope `admin` does not satisfy, so a tenant's administrator cannot
+enumerate other tenants.
+</Step>
+
+<Step>
+### Terminate TLS in front, and keep `trustProxy` honest
+
+The server trusts `X-Forwarded-*` so client IPs survive an ingress — which rate
+limiting and audit logging both depend on. Make sure only your proxy can reach
+it directly.
+</Step>
+
+</Steps>
+
+---
+
+## Operational tasks
+
+### Restoring a stuck workflow
+
+```bash
+# Force an evaluation. If this unsticks it, something failed to enqueue one.
+curl -X POST -H "x-api-key: $K" "$NF_URL/v1/ns/default/executions/$ID/decide"
+
+# Re-run the failed tasks of a terminal execution, in place.
+curl -X POST -H "x-api-key: $K" "$NF_URL/v1/ns/default/executions/$ID/retry"
+
+# Discard from a task onward and run again from there.
+curl -X POST -H "x-api-key: $K" -H 'content-type: application/json' \
+  -d '{"fromTaskRef":"charge"}' "$NF_URL/v1/ns/default/executions/$ID/rerun"
+
+# Bulk: pause, resume, retry or terminate up to 1000 at once.
+curl -X POST -H "x-api-key: $K" -H 'content-type: application/json' \
+  -d '{"workflowIds":["...","..."],"reason":"incident 412"}' \
+  "$NF_URL/v1/ns/default/executions/bulk/terminate"
+```
+
+A `poller` also runs a **stuck-workflow sweeper**, which surfaces executions
+that are `RUNNING` with nothing pending — the residue of a definition edited
+under a running instance, or an operator bug.
+
+### Moving definitions between environments
+
+```bash
+nf export --workflows checkout,fulfilment --out bundle.json
+NF_URL=https://prod.example.com NF_API_KEY=$PROD_KEY nf import bundle.json --dry-run
+NF_URL=https://prod.example.com NF_API_KEY=$PROD_KEY nf import bundle.json
+```
+
+A bundle carries workflow **and** task definitions. `--dry-run` reports what it
+would do and changes nothing. Conflicts are controlled with
+`--workflow-conflicts skip|new-version` and `--task-conflicts skip|overwrite`.
+
+### Retention
+
+Partitions are created ahead and dropped on expiry by the `poller` role:
+
+| Table | Granularity | Kept |
+|---|---|---|
+| `Timers` | hourly | 48 hours |
+| `WorkflowExecutions` | monthly | 12 months |
+| `WorkflowEvents` | monthly | 12 months |
+| `AuditEvents` | monthly | 84 months |
+
+Dropping a month of history is an instant `DROP TABLE` rather than a `DELETE` of
+millions of rows. This is also why the partition manager **must** be able to
+create and drop tables at runtime.
+
+---
+
+## Next
+
+- [Configuration](/docs/guide/configuration) — every environment variable, complete.
+- [Execution controls](/docs/guide/execution-controls) — quotas, caps and limits.
+- [API](/docs/guide/api) — credentials, scopes, and the surface itself.

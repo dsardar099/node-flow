@@ -38,6 +38,17 @@ testem.log
 .DS_Store
 Thumbs.db
 
+# Secrets — this project will hold database credentials, signing keys and
+# service-account secrets. Committed .env files are the single most common way
+# those leak, so deny by default and allow only the example template.
+.env
+.env.*
+!.env.example
+
+# pnpm
+.pnpm-store
+.pnpm-debug.log*
+
 .nx/cache
 .nx/workspace-data
 .cursor/rules/nx-rules.mdc
@@ -48,3 +59,14 @@ Thumbs.db
 .nx/polygraph
 .nx/self-healing
 .nx/migrate-runs
+vite.config.*.timestamp*
+
+# Next.js
+.next
+out
+
+vitest.config.*.timestamp*
+test-output
+# Generated client build output
+clients/java/target/
+clients/typescript/node_modules/

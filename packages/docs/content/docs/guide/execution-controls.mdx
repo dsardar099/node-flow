@@ -1,0 +1,654 @@
+---
+title: Execution controls
+description: Retries, backoff, jitter, retry budgets, every timeout class, concurrency caps, semaphores, rate limits, admission control, quotas and circuit breakers.
+---
+
+Everything that decides *whether* a task runs, *when* it runs again, and *how
+many* run at once. All of it is enforced **server-side**, at dequeue or in the
+decider — anything enforced in an SDK is advisory and the first worker written
+in another language bypasses it.
+
+## Where each control lives
+
+| Control | Configured on | Applied |
+|---|---|---|
+| Retries and backoff | Task definition (`retryCount` overridable per task) | Decider, on failure |
+| Retry budget | Task definition | Decider, over a 5-minute window |
+| `scheduleToStart`, `startToClose`, task timeout, heartbeat | Task definition | Timer, armed when the task is scheduled |
+| Workflow timeout | Workflow definition | Timer, armed on the first evaluation |
+| `concurrentExecLimit`, rate limit, semaphores | Task definition | **Dequeue** — the queue hands out fewer tasks |
+| `maxConcurrentTasks` | Workflow definition | Decider, when scheduling |
+| `maxConcurrentExecutions` | Workflow definition | Start — the request is **refused** |
+| `rateLimitConfig` | Workflow definition | Start — the run is **queued**, not refused |
+| Namespace quotas | Namespace | Start / registration |
+| Circuit breakers | `NODE_FLOW_CIRCUIT_BREAKER` | System tasks that leave the process |
+
+<Mermaid
+  title="Every gate a task passes"
+  chart={`
+flowchart TD
+  START[Start request] --> Q1{Namespace quota}
+  Q1 -->|over| R1[429 refused]
+  Q1 --> Q2{maxConcurrentExecutions}
+  Q2 -->|at cap| R2[LIMIT_EXCEEDED refused]
+  Q2 --> Q3{rateLimitConfig per key}
+  Q3 -->|at cap| HELD[RUNNING, awaitingAdmission]
+  Q3 --> RUN[Run admitted]
+  HELD -.->|a holder finishes| RUN
+  RUN --> DEC[Decider schedules a task]
+  DEC --> Q4{maxConcurrentTasks}
+  Q4 -->|at cap| WAIT1[not scheduled this pass]
+  Q4 --> QUEUED[Task queued]
+  QUEUED --> Q5{concurrentExecLimit}
+  Q5 --> Q6{rate limit tokens}
+  Q6 --> Q7{named semaphores}
+  Q7 -->|any gate closed| WAIT2[stays queued]
+  Q7 --> LEASED[Leased to a worker]
+`}
+/>
+
+---
+
+## Retries
+
+### The policy
+
+Set on a **task definition**:
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/metadata/task-definitions" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{
+    "name": "charge",
+    "retryCount": 5,
+    "retryLogic": "EXPONENTIAL_BACKOFF",
+    "retryDelaySeconds": 2,
+    "backoffScaleFactor": 2,
+    "maxRetryDelaySeconds": 300,
+    "jitter": 0.2,
+    "retryBudget": 0.3,
+    "nonRetryableErrors": ["card_declined", "INVALID_ARGUMENT"]
+  }'
+```
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `retryCount` | int 0–100 | `3` | Attempts **after** the first. `0` means run once. |
+| `retryLogic` | enum | `EXPONENTIAL_BACKOFF` | `FIXED`, `LINEAR_BACKOFF`, `EXPONENTIAL_BACKOFF`. |
+| `retryDelaySeconds` | number ≥ 0 | `1` | The base delay. |
+| `backoffScaleFactor` | number ≥ 1 | `2` | Growth factor for the two backoff shapes. |
+| `maxRetryDelaySeconds` | number ≥ 0 | `3600` | **Hard ceiling** on any computed delay. |
+| `jitter` | number 0–1 | `0.2` | Proportional randomisation, ±20% by default. |
+| `retryBudget` | number 0–1 | `0.3` | Maximum share of recent executions that may be retries. `1` disables. |
+| `nonRetryableErrors` | string[] | `[]` | Substrings of a failure reason that must never be retried. |
+
+<Callout type="warn">
+  Only `retryCount` can be overridden on a task *inside* a workflow. Writing
+  `retryLogic` or `retryDelaySeconds` there is silently stripped by the schema —
+  the workflow task schema does not have those fields. Policy belongs on the
+  task definition.
+</Callout>
+
+### The delay formula
+
+```
+FIXED                delay = retryDelaySeconds
+LINEAR_BACKOFF       delay = retryDelaySeconds * backoffScaleFactor * attempt
+EXPONENTIAL_BACKOFF  delay = retryDelaySeconds * backoffScaleFactor ^ (attempt - 1)
+
+delay = min(delay, maxRetryDelaySeconds)
+if jitter > 0:  delay = delay ± (delay * jitter)
+delay = clamp(delay, 0, maxRetryDelaySeconds)
+```
+
+`attempt` is 1-based: 1 is the delay before the **first** retry.
+
+The cap is applied **twice** — before and after jitter. Capping only beforehand
+lets upward jitter push the delay back over the ceiling, which defeats the point
+of having one.
+
+With the defaults (`retryDelaySeconds: 1`, factor 2, cap 3600):
+
+| Retry | Raw | After cap | With ±20% jitter |
+|---|---|---|---|
+| 1 | 1 s | 1 s | 0.8–1.2 s |
+| 2 | 2 s | 2 s | 1.6–2.4 s |
+| 3 | 4 s | 4 s | 3.2–4.8 s |
+| 8 | 128 s | 128 s | 102–154 s |
+| 12 | 2048 s | 2048 s | 1638–2458 s |
+| 14 | 8192 s | **3600 s** | 2880–3600 s |
+
+<Callout type="info">
+  `maxRetryDelaySeconds` exists because Conductor's absence of it causes real
+  production failures: attempt 12 of an exponential policy schedules a retry days
+  into the future and the task looks silently lost.
+</Callout>
+
+### Jitter
+
+On by default, because synchronised retries from many workers are a
+self-inflicted thundering herd. `jitter: 0.2` randomises the delay by ±20%.
+Set it to `0` only if you genuinely need deterministic timing and have one
+client.
+
+### Retry budget
+
+The control that stops a degraded dependency being held down by the retry
+traffic its own degradation caused — the classic way a partial outage becomes a
+total one.
+
+<Mermaid
+  title="How the budget is evaluated"
+  chart={`
+flowchart LR
+  W[Every 5 minutes of TaskExecutions<br/>for this task definition] --> C{total >= 20?}
+  C -->|no| PASS[budget never trips:<br/>a tiny sample lies]
+  C -->|yes| R{retries / total > retryBudget?}
+  R -->|no| PASS2[retries allowed]
+  R -->|yes| FAIL[budget spent:<br/>further retries fail fast]
+`}
+/>
+
+- The window is **300 seconds**, so a service that recovers is not punished for
+  a burst an hour ago.
+- Fewer than **20** executions in the window never trips it, because a tiny
+  sample would trip on the first retry before there is enough traffic to mean
+  anything.
+- `retryBudget: 1` disables it entirely.
+
+When the budget is spent, a failure is not retried even though attempts remain.
+The task fails, and the workflow fails with it.
+
+### `nonRetryableErrors`
+
+Each entry is checked as a **substring** of the task's
+`reasonForIncompletion`. So `"card_declined"` matches
+`Stripe error: card_declined (do_not_honor)`.
+
+### What is retryable at all
+
+| Task status | Retried? |
+|---|---|
+| `FAILED` | Yes, if attempts remain and the budget holds. |
+| `TIMED_OUT` | Only under `timeoutPolicy: RETRY` — see below. |
+| `FAILED_WITH_TERMINAL_ERROR` | **Never**, whatever `retryCount` says. |
+
+A worker sends `FAILED_WITH_TERMINAL_ERROR` to say "this input will never
+succeed". The system tasks classify their own failures — a 4xx from `HTTP` is
+terminal, a 503 is not; `INVALID_ARGUMENT` from gRPC is terminal, `UNAVAILABLE`
+is not; an `INLINE` script that throws is terminal, because it will throw again
+on identical input.
+
+### `optional`
+
+Orthogonal to retries. A task marked `"optional": true` still exhausts its
+retries; once it has, the failure is **absorbed**, the task ends
+`COMPLETED_WITH_ERRORS`, and the workflow carries on.
+
+```json
+{ "name": "log_to_analytics", "taskReferenceName": "analytics", "type": "SIMPLE", "optional": true, "retryCount": 1 }
+```
+
+---
+
+## Timeouts
+
+Five classes, each answering a different question. That is why they are separate
+numbers and not one.
+
+<Mermaid
+  title="What each deadline measures"
+  chart={`
+flowchart LR
+  A((scheduled)) -->|scheduleToStartTimeout| B((leased))
+  B -->|startToCloseTimeout| C((terminal))
+  A -->|timeoutSeconds: the whole budget| C
+  B -.->|heartbeatTimeout: gap between beats| B
+`}
+/>
+
+| Field | Measures | The failure it names |
+|---|---|---|
+| `scheduleToStartTimeout` | Enqueued until leased | **Nobody is running this queue.** A starved queue, not a slow worker — the difference between paging the platform team and paging the service owner. Conductor cannot express this. |
+| `startToCloseTimeout` | Leased until terminal | A slow or wedged worker. |
+| `timeoutSeconds` | Scheduled through to terminal | The total budget, end to end. |
+| `heartbeatTimeout` | Gap between heartbeats | A worker that died mid-task, reclaimed promptly rather than at the end of a long lease. |
+| `responseTimeoutSeconds` | Lease duration | Conductor-compatible alias. Default 3600. |
+| `pollTimeoutSeconds` | Long-poll hold | How long the server may hold a worker's poll open. Default 30. |
+
+**All default to `0`, which means unbounded, except the last two.** A policy of
+`0` arms no timer at all.
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/metadata/task-definitions" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{
+    "name": "charge",
+    "scheduleToStartTimeout": 120,
+    "startToCloseTimeout": 60,
+    "timeoutSeconds": 300,
+    "heartbeatTimeout": 30,
+    "timeoutPolicy": "TIME_OUT_WF"
+  }'
+```
+
+### Waiting tasks get only the total budget
+
+`WAIT`, `WAIT_FOR_WEBHOOK`, `HUMAN` and `PULL_WORKFLOW_MESSAGES` are never
+dispatched, so the two deadlines that measure dispatch and execution do not
+apply to them — arming `scheduleToStart` on a `WAIT` would fire while it is
+legitimately waiting and mark it `TIMED_OUT`, turning the feature into a bug
+that looks like one of the engine's own guarantees.
+
+Only `timeoutSeconds` is armed. For `WAIT_FOR_WEBHOOK` it is the **only** thing
+that ends a callback which never arrives.
+
+### `timeoutPolicy`
+
+What a missed deadline *means*. Set on the task definition (and, at workflow
+level, on the definition).
+
+| Policy | Effect |
+|---|---|
+| `TIME_OUT_WF` (default) | The workflow ends `TIMED_OUT`. The deadline was the workflow's deadline. |
+| `RETRY` | The timeout counts as a failed attempt and the task retries if attempts remain. |
+| `ALERT_ONLY` | An event is emitted and the task keeps its result; the workflow proceeds. A monitoring signal, not an outage. |
+
+<Callout type="warn">
+  Under `TIME_OUT_WF`, a timeout does **not** buy the task another full timeout.
+  Retrying under it let a task with a 5-minute budget and three retries hold its
+  workflow for twenty minutes while every attempt reported the same timeout.
+  Only `RETRY` spends retries on a timeout.
+</Callout>
+
+### Workflow timeout
+
+```json
+{ "timeoutSeconds": 3600 }
+```
+
+Armed on the one evaluation guaranteed to happen exactly once per execution —
+the first. When it fires the run ends `TIMED_OUT` and its failure workflow is
+started, the same as any other failure.
+
+<Callout type="info">
+  `timeoutPolicy` on a **workflow** definition is accepted and stored but not
+  consulted: a whole-run timeout always ends the run. The policy that matters is
+  the one on the **task definition**, which decides what a *task's* missed
+  deadline means.
+</Callout>
+
+---
+
+## Concurrency
+
+### `concurrentExecLimit` — per task definition
+
+A global cap on in-flight tasks of this type, across every workflow and every
+run.
+
+```json
+{ "name": "charge", "concurrentExecLimit": 2 }
+```
+
+Enforced **at dequeue**, under a transaction-scoped advisory lock keyed on the
+queue. A worker asking for ten when the cap is two gets two — and a second
+worker asking while those two are held gets **zero**. When a holder finishes,
+the next lease flows.
+
+<Callout type="info">
+  Counting in-flight work and then leasing against that count is a read-then-write
+  with nothing between: ten dispatchers all read zero, all grant themselves the
+  full cap, and the limit is exceeded by an order of magnitude. Every sequential
+  test still passes, which is what makes it dangerous. The advisory lock is what
+  closes it, and it contends only with other dispatchers of the *same* queue.
+</Callout>
+
+### `maxConcurrentTasks` — per execution
+
+```json
+{ "name": "fan_out", "maxConcurrentTasks": 2, "tasks": [ /* a fork over 8 branches */ ] }
+```
+
+Bounds fan-out blast radius within **one run**. A dynamic fork over ten thousand
+items would otherwise schedule all of them at once and bury the queue.
+
+Operators and waiting tasks are **exempt**: they perform no external work, and
+blocking them would stall the control flow that decides what runs next — the cap
+would prevent the workflow making progress at all.
+
+### `maxConcurrentExecutions` — per definition
+
+```json
+{ "name": "nightly_reconcile", "maxConcurrentExecutions": 1 }
+```
+
+Checked **before the row is created**, and a start over the cap is **refused**
+with `LIMIT_EXCEEDED`. Admitting a workflow and then stalling every one of its
+tasks against a concurrency cap looks identical to a broken worker pool from the
+outside; rejecting the start says exactly what happened.
+
+---
+
+## Named semaphores
+
+A shared ceiling across **unrelated** task types — the thing a per-definition
+cap cannot express: "these six different tasks must not exceed four concurrent
+hits on one fragile legacy API".
+
+<Mermaid
+  title="One semaphore, several task types"
+  chart={`
+flowchart LR
+  T1[export_report] --> S{{semaphore: legacy_erp<br/>permits 4}}
+  T2[sync_inventory] --> S
+  T3[reconcile_ledger] --> S
+  S --> ERP[(Fragile ERP)]
+`}
+/>
+
+<Steps>
+
+<Step>
+### Create it
+
+```bash
+curl -X PUT "$NF_URL/v1/ns/default/semaphores/legacy_erp" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"permits":4}'
+```
+</Step>
+
+<Step>
+### Declare it on every task definition that must hold it
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/metadata/task-definitions" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"name":"export_report","semaphores":["legacy_erp"]}'
+```
+</Step>
+
+<Step>
+### Watch it
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/semaphores"
+# [{ "name": "legacy_erp", "permits": 4, "held": 4 }]
+```
+
+The `held` count is the reason this endpoint exists rather than a plain listing:
+a semaphore quietly at its limit looks identical to one nobody uses, and "why is
+my task not running?" has to be answerable without reading the database.
+</Step>
+
+</Steps>
+
+Two properties worth knowing:
+
+- **All or nothing.** A task acquires every semaphore it needs or none of them.
+  Taking a subset and waiting for the rest is how two tasks needing the same two
+  permits deadlock, each holding one.
+- **Permits are leased, not held.** A worker that crashes releases its permits on
+  expiry instead of blocking the semaphore forever; a poller sweeps stale
+  holders.
+
+An **unconfigured** semaphore does not gate anything — declaring
+`semaphores: ["not_yet_created"]` is a no-op until permits are set.
+
+---
+
+## Rate limits
+
+Two different things share the phrase. They solve different problems.
+
+### Task rate limit — throughput
+
+```json
+{ "name": "partner_api", "rateLimitPerFrequency": 100, "rateLimitFrequencySeconds": 60 }
+```
+
+At most 100 dispatches per 60-second window, whatever the concurrency. This is
+what most third-party APIs actually meter, and it is **not** a concurrency cap:
+it bounds throughput rather than parallelism, and completing a task does **not**
+refill the budget.
+
+The window is a **fixed bucket** — `floor(now / size)` — rather than a sliding
+one. Fixed windows admit a burst at a boundary, but the alternative needs
+per-event timestamps, and a burst of at most 2× for one window is a fair trade
+for a single upsert on the dispatch path.
+
+<Callout type="warn">
+  Tokens are consumed when they are **granted**, so a worker must actually
+  attempt to dispatch what it is given. Unused grants are lost for the window.
+  That is the conservative direction: under-dispatching briefly is recoverable,
+  exceeding a downstream limit may not be.
+</Callout>
+
+### Workflow rate limit — per-key admission
+
+```json
+{
+  "name": "tenant_sync",
+  "rateLimitConfig": { "rateLimitKey": "${workflow.input.tenantId}", "concurrentExecLimit": 1 }
+}
+```
+
+At most `concurrentExecLimit` executions sharing the **resolved** key run at
+once. Later starts are **queued, not refused**: the run is created `RUNNING` with
+`awaitingAdmission: true`, schedules nothing, and is admitted when a holder
+finishes.
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/executions/$ID" | jq '.awaitingAdmission'
+```
+
+Different keys never contend: three runs for `acme` queue behind each other
+while a run for `globex` starts immediately.
+
+A key that resolves to nothing shares a bucket named by the expression itself,
+rather than escaping the limit — an unkeyed run is still a run against whatever
+the limit protects.
+
+### Combining them
+
+When several gates apply, the **most restrictive wins**: the allowance is the
+minimum across `concurrentExecLimit`, the rate-limit tokens and the semaphores.
+
+---
+
+## Namespace quotas
+
+Platform-level limits, set per namespace by an administrator.
+
+```bash
+curl -X PUT "$NF_URL/v1/ns/default/quotas" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{
+    "maxConcurrentExecutions": 5000,
+    "maxExecutionsPerMinute": 2000,
+    "maxWorkflowDefinitions": 500,
+    "maxSchedules": 100
+  }'
+```
+
+| Quota | Checked when |
+|---|---|
+| `maxConcurrentExecutions` | Starting a run |
+| `maxExecutionsPerMinute` | Starting a run |
+| `maxWorkflowDefinitions` | Registering a definition |
+| `maxSchedules` | Creating a schedule |
+
+Exceeding one is a **429** carrying `{ quota, limit, current, retryAfterSeconds }`.
+Execution quotas are checked in the **same transaction** as the insert, so two
+concurrent starts cannot both see room for one more.
+
+An absent quota is unlimited.
+
+---
+
+## Circuit breakers
+
+Shared by every system task that leaves the process — `HTTP`, `HTTP_POLL`,
+`WEBHOOK`, `GRPC`. **Off by default**, because a breaker changes how failures
+behave and that should be a decision, not a surprise after an upgrade.
+
+```bash
+NODE_FLOW_CIRCUIT_BREAKER='{"enabled":true}'
+# or, with everything spelled out:
+NODE_FLOW_CIRCUIT_BREAKER='{"enabled":true,"failureRatio":0.5,"minimumRequests":10,"windowMs":30000,"openMs":5000,"maxOpenMs":60000}'
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | |
+| `windowMs` | `30000` | Outcomes older than this are forgotten. |
+| `minimumRequests` | `10` | Below this many outcomes in the window, never open — small samples lie. |
+| `failureRatio` | `0.5` | Failure fraction at or above which it opens. Must be `> 0` and `<= 1`. |
+| `openMs` | `5000` | How long it stays open before admitting a probe. |
+| `maxOpenMs` | `60000` | The ceiling when repeated probes keep failing and the wait doubles. |
+
+<Mermaid
+  title="Breaker states"
+  chart={`
+stateDiagram-v2
+  closed --> open: failure ratio exceeded<br/>(with enough samples)
+  open --> half_open: openMs elapsed
+  half_open --> closed: the single probe succeeds
+  half_open --> open: the probe fails<br/>(openMs doubles, up to maxOpenMs)
+`}
+/>
+
+The failure this exists for: a dependency goes down, every task calling it takes
+its full timeout, and those tasks occupy the system-task runner for thirty
+seconds each. One dead host then consumes the capacity every *other* workflow
+needs.
+
+Four decisions worth knowing:
+
+- **Per process, not cluster-wide.** A shared breaker would need shared state — a
+  second dependency — to protect against a dependency being down, and would make
+  the breaker itself a thing that can fail. Envoy and Hystrix are per-instance
+  for the same reason.
+- **Only server-side failures count.** A 404 or a 422 is the caller's problem and
+  says nothing about the dependency's health; counting it would let one workflow
+  with a bad URL open the breaker for every other workflow calling the same host.
+  Timeouts, connection errors, 5xx and 429 count.
+- **An open breaker fails the task, but never terminally.** The retry policy
+  still owns what happens next. A terminal failure here would turn a transient
+  outage into permanently dead workflows, which is precisely what the breaker is
+  supposed to prevent.
+- **Half-open admits exactly one probe.** Letting the whole backlog through the
+  moment the window expires is how a recovering service is knocked over again.
+
+Breakers are keyed by target: `HTTP` and `HTTP_POLL` calling the same host share
+one, so a host known to be down is known to both. gRPC is keyed by the
+*configured service name* rather than its address, because that is the name an
+operator knows and two services on one host should fail apart.
+
+---
+
+## Diagnosing "why is my task not running?"
+
+Every control reports itself. `LimitExceededError` carries a `control` field
+naming which one tripped, because that question has to be answerable from the
+execution view rather than from server logs.
+
+<Steps>
+
+<Step>
+### Is the run even admitted?
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/executions/$ID" \
+  | jq '{status, awaitingAdmission, reasonForIncompletion}'
+```
+
+`awaitingAdmission: true` means a per-key workflow rate limit is holding it.
+</Step>
+
+<Step>
+### Is work actually queued?
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/queues/charge/depth"
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/queues"
+```
+</Step>
+
+<Step>
+### Is anyone polling?
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/queues/workers"
+```
+
+Depth without workers is a fleet problem — very often a domain mismatch.
+</Step>
+
+<Step>
+### Is a gate closed?
+
+```bash
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/semaphores"
+curl -s -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/metadata/task-definitions/charge"
+```
+
+Check `concurrentExecLimit`, `rateLimitPerFrequency` and `semaphores` on the
+definition, and `held` versus `permits` on each semaphore.
+</Step>
+
+<Step>
+### Force an evaluation
+
+An escape hatch and a diagnostic — if this unsticks a run, something failed to
+enqueue an evaluation:
+
+```bash
+curl -X POST -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/executions/$ID/decide"
+```
+</Step>
+
+</Steps>
+
+### Metrics that move first
+
+| Metric | Watch for |
+|---|---|
+| `node_flow_decide_queue_oldest_seconds` | Decider lag. Depth alone cannot tell a drained burst from a stall. |
+| `node_flow_tasks_ready` | Work waiting for workers. |
+| `node_flow_tasks_delayed` | Tasks waiting out a retry backoff — the signal during a retry storm, counted nowhere else. |
+| `node_flow_timers_overdue` | The sweeper is behind; timeouts and waits will fire late. |
+| `node_flow_outbox_dead_lettered` | Never expected to be non-zero. |
+
+See [Self-hosting → observability](/docs/guide/self-hosting#observability).
+
+---
+
+## Choosing values
+
+A rough starting point, to be argued with:
+
+| Task shape | `retryCount` | `retryLogic` | `scheduleToStart` | `startToClose` | Other |
+|---|---|---|---|---|---|
+| Idempotent internal call | 3 | `EXPONENTIAL_BACKOFF`, base 1 s | 120 | 30 | |
+| Third-party API, metered | 5 | `EXPONENTIAL_BACKOFF`, base 2 s, cap 300 | 300 | 60 | `rateLimitPerFrequency` to their quota |
+| Payment or anything with money | 3 | `EXPONENTIAL_BACKOFF`, base 5 s | 60 | 120 | `nonRetryableErrors`, and an idempotency key in the worker |
+| Long batch job | 0 | — | 600 | 0 | `heartbeatTimeout: 60`, heartbeat from the handler |
+| Fragile legacy system | 2 | `LINEAR_BACKOFF`, base 10 s | 900 | 300 | A named semaphore, `concurrentExecLimit` |
+| Best-effort telemetry | 1 | `FIXED`, 1 s | 60 | 10 | `"optional": true` on the workflow task |
+
+Two rules that are not negotiable:
+
+1. **Set `scheduleToStartTimeout` on anything a worker runs.** It is the only
+   control that distinguishes "no workers on this queue" from "the worker is
+   slow", and without it a starved queue hangs silently.
+2. **Set a downstream idempotency key in any worker with side effects.** Every
+   task may be delivered more than once — see
+   [Workers → idempotency](/docs/guide/workers#idempotency).
+
+## Next
+
+- [Workers](/docs/guide/workers) — the other side of these controls.
+- [Configuration](/docs/guide/configuration) — the server-level settings named here.
+- [Self-hosting](/docs/guide/self-hosting) — metrics, roles and scaling.

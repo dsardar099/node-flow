@@ -1,0 +1,520 @@
+---
+title: Configuration
+description: Every environment variable the server reads, with its type, default and effect.
+---
+
+Everything is environment variables, **validated once at boot**. A mistyped
+role, a missing database URL or a malformed JSON map fails the start rather than
+surfacing minutes later as a confusing runtime error — or worse, as a silent
+default: a cluster where every workflow starts and none progresses because no
+process took the decider role.
+
+Failures are reported **all at once**, which matters more than it sounds: fixing
+misconfiguration one restart at a time is how a five-minute deploy becomes an
+hour.
+
+```
+Invalid environment configuration:
+  - DATABASE_URL: DATABASE_URL is required
+  - NODE_FLOW_JWT_SECRET: NODE_FLOW_JWT_SECRET must be at least 32 characters
+  - NODE_FLOW_ROLES: unknown role(s): decidr (expected api, decider, poller)
+```
+
+The rule this follows: **a setting whose wrong value is silently survivable gets
+no default.**
+
+## How values are parsed
+
+| Type | Accepted | Notes |
+|---|---|---|
+| Boolean | `true`, `false`, `1`, `0`, `yes`, `no` | Anything else **fails the boot**. |
+| Integer | A decimal number | Coerced; must be a positive integer where noted. |
+| CSV | `a,b,c` | Trimmed; empty entries dropped. |
+| JSON | A JSON object or array | Parsed and structurally validated. A malformed map is a boot failure, not a runtime surprise. |
+
+---
+
+## Required
+
+Two variables have no default, and the server will not start without them.
+
+| Variable | Type | Why there is no default |
+|---|---|---|
+| `DATABASE_URL` | string | A server that silently starts against `localhost/postgres` because the real URL was missing is worse than one that refuses to boot. |
+| `NODE_FLOW_JWT_SECRET` | string, ≥32 chars | A hardcoded fallback secret is the single most reliably exploited misconfiguration in this class of system, precisely because it works. |
+
+---
+
+## Core
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_ENV` | `development` \| `test` \| `production` | `development` | Standard Node environment. |
+| `PORT` | int 1–65535 | `3000` | HTTP port. The server binds `0.0.0.0`. |
+| `DATABASE_URL` | string | — | **Required.** libpq connection URI; every `pg` parameter works, including `sslmode` and `sslrootcert`. |
+| `DATABASE_MAX_CONNECTIONS` | positive int | `20` | Pool ceiling **per process**. A decider holds one per in-flight evaluation. |
+| `DATABASE_MIGRATE_ON_BOOT` | boolean | `true` | Run pending migrations at boot. See the caveat below. |
+| `NODE_FLOW_ROLES` | CSV of `api`, `decider`, `poller` | `api,decider,poller` | Which loops this process runs. An **invalid** value fails the boot; an empty value means all three. |
+
+<Callout type="warn">
+  `DATABASE_MIGRATE_ON_BOOT=false` currently also skips **first-install seeding**
+  and the two `LISTEN`/`NOTIFY` listeners that power long-poll wake-ups and the
+  live execution stream. Both listeners degrade to backstop polls rather than
+  breaking, but a brand-new database started this way gets no namespace and no
+  administrator. See
+  [Self-hosting → running migrations](/docs/guide/self-hosting#running-migrations).
+</Callout>
+
+---
+
+## First-install seeding
+
+Creates the first namespace and administrator on a database that has **no
+namespaces at all** — not "no namespace by this name". That makes it idempotent
+in the only sense that matters: it acts once in the lifetime of a database, and
+every later boot is one `SELECT` that does nothing.
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_SEED` | boolean | `true` | Turn off where accounts are provisioned by an identity provider — an unexpected local administrator is then a finding rather than a convenience. |
+| `NODE_FLOW_SEED_NAMESPACE` | string | `default` | Slug of the first namespace. |
+| `NODE_FLOW_SEED_EMAIL` | email | `admin@node-flow.dev` | The first administrator. Granted `admin` **and** `platform:admin`, since creating a second namespace needs a scope `admin` deliberately does not satisfy. |
+| `NODE_FLOW_SEED_PASSWORD` | string, ≥12 chars | **none** | Leave unset in production. |
+
+<Callout type="warn">
+  `NODE_FLOW_SEED_PASSWORD` deliberately has no default. Unset, the seed
+  generates 160 bits of entropy and prints it once, as a block, at boot — so no
+  two installs share a credential. A default here would put the same password on
+  every deployment that never changed it, which is the failure this arrangement
+  exists to avoid. The development compose file sets it explicitly, which is the
+  right place for a known-weak secret and the only place one belongs.
+</Callout>
+
+---
+
+## Authentication and tokens
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_JWT_SECRET` | string, ≥32 chars | — | **Required.** Signs service-account access tokens. |
+| `NODE_FLOW_JWT_ISSUER` | string | `node-flow` | The `iss` claim. |
+| `NODE_FLOW_ACCESS_TOKEN_TTL_SECONDS` | positive int | `3600` | Lifetime of an exchanged access token. |
+| `NODE_FLOW_MTLS_ENABLED` | boolean-ish | `false` | Read a client certificate for mTLS authentication. Only meaningful when this process terminates TLS itself with a CA bundle. |
+
+<Callout type="warn">
+  `NODE_FLOW_MTLS_ENABLED` is parsed with a plain coercion rather than the
+  strict boolean parser the other flags use, so **any non-empty string is
+  truthy** — including the literal `"false"`. To disable it, leave the variable
+  unset or set it to the empty string.
+</Callout>
+
+### Secrets
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_SECRET_KEYS` | `id:base64key[,id:base64key…]` | `` (empty) | Master keys for sealing secrets, **newest first**. 32 raw bytes each. |
+
+Empty means this install stores **no** secrets and says so when asked to —
+rather than storing them in clear, which is the failure an optional encryption
+key invites. Two entries is what a rotation looks like in flight: the first
+seals, the rest still open what they sealed before.
+
+```bash
+openssl rand -base64 32
+NODE_FLOW_SECRET_KEYS='k2:NEW_KEY,k1:OLD_KEY'
+```
+
+### Workload identity (machines)
+
+| Variable | Type | Default |
+|---|---|---|
+| `NODE_FLOW_OIDC_ISSUERS` | JSON array | `[]` |
+
+```json
+[
+  { "issuer": "https://token.actions.githubusercontent.com", "jwksUri": "https://token.actions.githubusercontent.com/.well-known/jwks", "audience": "node-flow" }
+]
+```
+
+Each entry requires all three fields. Empty disables the mechanism entirely — an
+install that does not use workload identity should not be reachable by anything
+presenting a token from an IdP it never chose. **The issuer is matched exactly**;
+nothing looser is offered, because a prefix or hostname match is how an IdP
+nobody configured ends up able to mint tokens for this install.
+
+### SSO (humans)
+
+| Variable | Type | Default |
+|---|---|---|
+| `NODE_FLOW_SSO_PROVIDERS` | JSON array | `[]` |
+| `NODE_FLOW_SAML_PROVIDERS` | JSON array | `[]` |
+
+OIDC providers require every one of `name`, `issuer`, `clientId`,
+`clientSecret`, `authorizationEndpoint`, `tokenEndpoint`, `jwksUri`,
+`redirectUri`, `namespace`; `scopes` is optional.
+
+```json
+[
+  {
+    "name": "okta",
+    "issuer": "https://acme.okta.com",
+    "clientId": "0oa…",
+    "clientSecret": "…",
+    "authorizationEndpoint": "https://acme.okta.com/oauth2/v1/authorize",
+    "tokenEndpoint": "https://acme.okta.com/oauth2/v1/token",
+    "jwksUri": "https://acme.okta.com/oauth2/v1/keys",
+    "redirectUri": "https://flows.example.com/v1/auth/sso/okta/callback",
+    "namespace": "default",
+    "scopes": "openid email profile"
+  }
+]
+```
+
+SAML providers require `name`, `entryPoint`, `issuer`, `callbackUrl`,
+`namespace` and `idpCert` (one PEM, or several during a rotation). Optional:
+`emailAttribute`, `nameAttribute`, `privateKey`, `decryptionPvk`,
+`spCertificate`, `identifierFormat`, `signatureAlgorithm` (`sha256` or
+`sha512`), `acceptedClockSkewMs`.
+
+<Callout type="info">
+  Only the **SP-initiated, HTTP-POST-binding** SAML flow is supported, and that
+  is a security decision rather than a gap: an IdP-initiated assertion arrives
+  unsolicited, carries no `InResponseTo`, and therefore cannot be bound to the
+  browser that is about to receive the session.
+
+  `NODE_FLOW_OIDC_ISSUERS` and `NODE_FLOW_SSO_PROVIDERS` are deliberately
+  separate: one verifies a token a platform already minted, the other runs a
+  browser login. Conflating them would mean a machine token could open a human
+  session.
+</Callout>
+
+---
+
+## Payloads and blob storage
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_PAYLOAD_THRESHOLD_BYTES` | positive int | `262144` (256 KiB) | Payloads larger than this are offloaded. |
+| `NODE_FLOW_BLOB_STORE` | `fs` \| `s3` | `fs` | Where offloaded payloads live. |
+| `NODE_FLOW_BLOB_ROOT` | string | `.node-flow/blobs` | `fs` only. Relative paths resolve against the working directory. |
+| `NODE_FLOW_BLOB_S3` | JSON object | `{}` | `s3` only. |
+
+```bash
+# AWS — omit the credentials and the SDK reads the instance role or IRSA,
+# so node-flow holds no long-lived keys.
+NODE_FLOW_BLOB_S3='{"bucket":"nf-payloads","region":"eu-west-1","prefix":"prod/"}'
+
+# MinIO and other S3-compatible endpoints
+NODE_FLOW_BLOB_S3='{"bucket":"payloads","endpoint":"http://minio:9000","forcePathStyle":true,"accessKeyId":"…","secretAccessKey":"…"}'
+```
+
+Fields: `bucket`, `region`, `endpoint`, `forcePathStyle`, `accessKeyId`,
+`secretAccessKey`, `prefix`.
+
+`NODE_FLOW_BLOB_STORE=s3` without a `bucket` **fails at boot** with the rest of
+the configuration, instead of at the first payload large enough to offload —
+which could be days later.
+
+<Callout type="warn">
+  `fs` assumes every replica sees the same disk. More than one node without a
+  shared mount needs `s3`, or a task will eventually fail to read a payload
+  another server wrote.
+</Callout>
+
+---
+
+## Outbound HTTP
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_HTTP_ALLOW_PRIVATE` | boolean | `false` | Let `HTTP`, `HTTP_POLL`, `WEBHOOK` and `PARSE_DOCUMENT` reach private, loopback and link-local addresses. |
+| `NODE_FLOW_HTTP_ALLOWED_HOSTS` | CSV | `` | Hostnames always permitted, even with the guard on. **Exact match.** |
+
+<Callout type="warn">
+  This is a **deployment** setting rather than a task input, and that is the
+  point: any workflow author could set the latter, and this is the control that
+  stops a definition reaching cloud metadata or an internal admin panel. Turn it
+  on only where every workflow author is trusted; prefer naming hosts.
+</Callout>
+
+---
+
+## System task limits
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_SYSTEM_TASK_CONCURRENCY` | positive int | `20` | System tasks one poller process runs at a time. |
+| `NODE_FLOW_INLINE_TIMEOUT_MS` | positive int | `5000` | CPU budget for an `INLINE` script, enforced from inside the sandbox. |
+| `NODE_FLOW_INLINE_MEMORY_BYTES` | positive int | `33554432` (32 MiB) | Memory budget for an `INLINE` script. |
+| `NODE_FLOW_JQ_TIMEOUT_MS` | positive int | `5000` | Budget for a jq program. Enforced by killing the thread it runs in, because jq cannot be interrupted. |
+| `NODE_FLOW_JQ_MAX_OUTPUT_BYTES` | positive int | `1048576` (1 MiB) | Bound on a jq result. |
+
+---
+
+## Worker protocol
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_MAX_POLL_SECONDS` | positive int | `30` | Upper bound on a worker's long-poll, so a held connection is never unbounded. A client's `waitSeconds` is clamped to this. |
+| `NODE_FLOW_DEFAULT_LEASE_SECONDS` | positive int | `60` | Lease duration when a worker names none. A requested lease is clamped to `NODE_FLOW_MAX_POLL_SECONDS × 60`. |
+
+---
+
+## Databases for the `JDBC` task
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `NODE_FLOW_SQL_DATASOURCES` | JSON object: name → connection string | `{}` | Databases a `JDBC` task may reach, **by name**. |
+| `NODE_FLOW_SQL_STATEMENT_TIMEOUT_MS` | positive int | `30000` | Enforced by the database, not by us. |
+| `NODE_FLOW_SQL_MAX_ROWS` | positive int | `1000` | Bounds a result, which is stored, indexed and passed to the next task. |
+
+```bash
+NODE_FLOW_SQL_DATASOURCES='{"reporting":"postgres://reader:pw@warehouse:5432/analytics","legacy":"postgres://…"}'
+```
+
+Empty (the default) **disables the task entirely**, so an install that needs none
+is not exposed at all. A definition that supplies its own connection string is
+refused — see [System tasks → JDBC](/docs/guide/system-tasks#jdbc).
+
+---
+
+## gRPC services
+
+| Variable | Type | Default |
+|---|---|---|
+| `NODE_FLOW_GRPC_SERVICES` | JSON object: name → config | `{}` |
+
+```json
+{
+  "pricing": {
+    "address": "pricing.svc:50051",
+    "protoPath": "/etc/node-flow/pricing.proto",
+    "package": "pricing.v1",
+    "service": "Pricing",
+    "tls": false,
+    "includeDirs": ["/etc/node-flow/protos"]
+  }
+}
+```
+
+`address`, `protoPath`, `package` and `service` are all required; a missing one
+fails the boot. `tls` defaults to false, because most gRPC is mesh-internal.
+
+---
+
+## Message brokers
+
+| Variable | Type | Default | Required key per connection |
+|---|---|---|---|
+| `NODE_FLOW_KAFKA_CLUSTERS` | JSON object | `{}` | `brokers` (a non-empty array) |
+| `NODE_FLOW_NATS_CONNECTIONS` | JSON object | `{}` | `servers` |
+| `NODE_FLOW_AMQP_CONNECTIONS` | JSON object | `{}` | `url` |
+| `NODE_FLOW_SQS_CONNECTIONS` | JSON object | `{}` | `region` |
+| `NODE_FLOW_REDIS_CONNECTIONS` | JSON object | `{}` | `url` |
+
+Connection names may use only letters, digits, `_` and `-`. A connection missing
+its required key fails the boot rather than becoming a source that never
+connects.
+
+```bash
+NODE_FLOW_KAFKA_CLUSTERS='{"default":{"brokers":["kafka-1:9092","kafka-2:9092"]}}'
+NODE_FLOW_NATS_CONNECTIONS='{"default":{"servers":"nats://nats:4222"}}'
+NODE_FLOW_AMQP_CONNECTIONS='{"default":{"url":"amqp://guest:guest@rabbit:5672"}}'
+NODE_FLOW_SQS_CONNECTIONS='{"default":{"region":"eu-west-1"}}'
+NODE_FLOW_REDIS_CONNECTIONS='{"default":{"url":"redis://redis:6379"}}'
+```
+
+### Sink and source naming
+
+| Connection | `EVENT` sink | Event-handler `source` |
+|---|---|---|
+| NATS | `nats:<name>:<subject>` | `nats:<name>` |
+| AMQP | `amqp:<name>:<queue>` or `amqp:<name>:<exchange>/<routingKey>` | `amqp:<name>` |
+| SQS | `sqs:<name>:<queue>` | `sqs:<name>` |
+| Redis Streams | `redis:<name>:<stream>` | `redis:<name>` |
+| Kafka | *(not an `EVENT` sink)* — use the `KAFKA_PUBLISH` task with `cluster` and `topic` | `kafka:<name>` |
+
+The configured sources of a running install are readable at
+`GET /v1/ns/{ns}/event-handlers/sources`.
+
+<Callout type="warn">
+  Writing `kafka:default:my-topic` as an `EVENT` sink matches **no handler at
+  all**: the event dead-letters, visibly. Kafka is published with
+  `KAFKA_PUBLISH`, which names its cluster and topic as separate fields.
+</Callout>
+
+The broker client libraries are **optional peers**. An install that uses none
+never loads them.
+
+---
+
+## SMTP, for the `EMAIL` task
+
+| Variable | Type | Default |
+|---|---|---|
+| `NODE_FLOW_SMTP_TRANSPORTS` | JSON object: name → config | `{}` |
+
+```json
+{
+  "default": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "secure": false,
+    "user": "…",
+    "pass": "…",
+    "from": "ops@example.com"
+  },
+  "staging": { "host": "localhost", "disabled": true }
+}
+```
+
+Only `host` is required. `secure: true` is implicit TLS (port 465); port 587
+negotiates STARTTLS and leaves it false. `disabled: true` makes the transport
+**fail loudly** rather than swallowing mail — a staging install that quietly
+drops mail teaches everyone that the task works, and the surprise arrives in
+production.
+
+`nodemailer` is an optional peer, so an install that sends no mail never loads
+it.
+
+---
+
+## Circuit breakers
+
+| Variable | Type | Default |
+|---|---|---|
+| `NODE_FLOW_CIRCUIT_BREAKER` | JSON object | `{}` (disabled) |
+
+```bash
+NODE_FLOW_CIRCUIT_BREAKER='{"enabled":true}'
+NODE_FLOW_CIRCUIT_BREAKER='{"enabled":true,"failureRatio":0.5,"minimumRequests":10,"windowMs":30000,"openMs":5000,"maxOpenMs":60000}'
+```
+
+| Field | Default | Validated as |
+|---|---|---|
+| `enabled` | `false` | boolean |
+| `windowMs` | `30000` | positive number |
+| `minimumRequests` | `10` | positive number |
+| `failureRatio` | `0.5` | a fraction above 0 and at most 1 |
+| `openMs` | `5000` | positive number |
+| `maxOpenMs` | `60000` | positive number |
+
+Shared by `HTTP`, `HTTP_POLL`, `WEBHOOK` and `GRPC`. See
+[Execution controls → circuit breakers](/docs/guide/execution-controls#circuit-breakers).
+
+---
+
+## Browser access to the REST gateway
+
+| Variable | Type | Default |
+|---|---|---|
+| `NODE_FLOW_GATEWAY_CORS_ORIGINS` | CSV of exact origins | `` |
+
+Empty means **no** CORS headers and therefore no cross-origin browser access —
+the safe default, because a gateway route runs a workflow and the wrong origin
+list is a way for someone else's page to do that with a visitor's credentials.
+
+`*` is deliberately **not** special-cased: it cannot be combined with
+credentials anyway, and an install that means "anyone" should say so origin by
+origin, or put a proxy in front that owns the policy.
+
+```bash
+NODE_FLOW_GATEWAY_CORS_ORIGINS='https://app.example.com,https://admin.example.com'
+```
+
+---
+
+## Telemetry
+
+Read directly rather than through the validated schema, because the SDK must
+start before anything else is imported.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NODE_FLOW_OTEL_ENABLED` | unset | Exactly `true` turns OpenTelemetry on. Any other value leaves it off. |
+| `OTEL_SERVICE_NAME` | `node-flow` | Resource attribute. |
+| `NODE_FLOW_VERSION` | `1.0.0` | Reported as the service version. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Read by the OTLP exporter itself. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | Likewise. |
+| every other `OTEL_*` | — | Sampling, resource attributes, protocol — all the standard names. |
+
+Everything except the on/off switch uses the standard `OTEL_*` variables the SDK
+already reads, so there is no second vocabulary for things that already have
+names.
+
+---
+
+## The dashboard image
+
+The UI is a separate container and reads only these.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NODE_FLOW_API_URL` | `http://localhost:3000` | Where the dashboard's **server-side** proxy sends API calls. The browser only ever talks to one origin, which is what keeps the session cookie working without CORS. |
+| `NODE_FLOW_UI_NAMESPACE` | `default` | The namespace pre-filled on the login form. |
+| `PORT` | `3100` | |
+| `HOST` | — | Standard Next.js bind address. |
+
+---
+
+## The `nf` CLI
+
+Flags win over environment variables.
+
+| Variable | Flag | Used by |
+|---|---|---|
+| `NF_URL` | `--url` | Everything that talks to a server. Defaults to `http://localhost:3000`. |
+| `NF_API_KEY` | `--api-key` | Likewise. No default — the command fails naming it. |
+| `NF_NAMESPACE` | `--namespace` | Likewise. Defaults to `default`. |
+| `DATABASE_URL` | `--database-url` | `nf bootstrap`, `nf create-user`, `nf migrate`, which talk to Postgres directly. |
+
+The benchmark harness (`nf-bench`) reads `NODE_FLOW_API_KEY`.
+
+---
+
+## A production starting point
+
+```bash
+# ---- required ----
+DATABASE_URL='postgres://nodeflow:…@db.internal:5432/nodeflow?sslmode=verify-full&sslrootcert=/certs/ca.pem'
+NODE_FLOW_JWT_SECRET='…at least 32 characters…'
+
+# ---- identity ----
+NODE_FLOW_SECRET_KEYS='k1:…base64 of 32 random bytes…'
+# Leave NODE_FLOW_SEED_PASSWORD unset. Set NODE_FLOW_SEED=false once the
+# install has its accounts.
+
+# ---- roles: one of these per deployment ----
+NODE_FLOW_ROLES=api
+# NODE_FLOW_ROLES=decider
+# NODE_FLOW_ROLES=poller
+
+# ---- storage ----
+NODE_FLOW_BLOB_STORE=s3
+NODE_FLOW_BLOB_S3='{"bucket":"nf-payloads","region":"eu-west-1"}'
+
+# ---- safety ----
+NODE_FLOW_HTTP_ALLOW_PRIVATE=false
+NODE_FLOW_HTTP_ALLOWED_HOSTS='internal-api.svc.cluster.local'
+NODE_FLOW_CIRCUIT_BREAKER='{"enabled":true}'
+NODE_FLOW_GATEWAY_CORS_ORIGINS=''
+
+# ---- capacity ----
+DATABASE_MAX_CONNECTIONS=20
+NODE_FLOW_SYSTEM_TASK_CONCURRENCY=20
+NODE_FLOW_MAX_POLL_SECONDS=30
+NODE_FLOW_DEFAULT_LEASE_SECONDS=60
+
+# ---- migrations: run them as a job, not on every pod ----
+DATABASE_MIGRATE_ON_BOOT=false
+
+# ---- observability ----
+NODE_FLOW_OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_SERVICE_NAME=node-flow
+```
+
+## Next
+
+- [Self-hosting](/docs/guide/self-hosting) — what to do with these.
+- [Execution controls](/docs/guide/execution-controls) — the per-workflow and per-task settings that are *not* environment variables.

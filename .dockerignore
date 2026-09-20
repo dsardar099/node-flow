@@ -1,0 +1,52 @@
+# What must never enter the build context.
+#
+# `node_modules` is the one that actually breaks the build rather than merely
+# slowing it: copied in, it becomes a modules directory pnpm wants to replace,
+# and pnpm refuses to remove one non-interactively. The symptom is an opaque
+# `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` during `install`.
+#
+# The rest is size and correctness: build output from the host would shadow what
+# the image builds, and a local `.env` would bake someone's credentials into a
+# layer that ships.
+node_modules
+**/node_modules
+
+# Build output — the image produces its own.
+dist
+**/dist
+out-tsc
+**/out-tsc
+.next
+**/.next
+**/*.tsbuildinfo
+
+# Caches and local state.
+.nx
+.pnpm-store
+coverage
+**/test-output
+.node-flow
+
+# Generated clients: large, and not needed to run the server.
+clients
+
+# Local configuration and secrets.
+.env
+.env.*
+*.pem
+*.key
+
+# Repository metadata.
+.git
+.github
+.vscode
+.idea
+**/.DS_Store
+
+# The docs site includes the landing page and is deployed separately; nothing
+# in the server or dashboard images references it, and its content and assets are
+# large enough to matter to build time.
+packages/docs/content
+packages/docs/src
+packages/docs/public
+packages/docs/.next

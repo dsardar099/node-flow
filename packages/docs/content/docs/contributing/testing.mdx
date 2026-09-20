@@ -1,0 +1,439 @@
+---
+title: Testing
+description: The layers, the two release gates, and the lesson that matters most — a test that supplies the state whose construction is broken cannot fail.
+---
+
+Correctness for an orchestrator is mostly about what happens when things break,
+so the suite is weighted accordingly. There are more than **1,500 tests** across
+the workspace — with the largest concentrations in `store`, `server`, `tasks`
+and `engine` — plus **48 smoke checks** and **266 feature checks** against the
+built image. Exact unit-test counts deliberately are not pinned here: the
+runner is the source of truth and the number changes with almost every feature.
+
+The number matters less than its shape. `store` and `server` carry most of it
+because that is where the failures are silent — a lost wakeup, a permit that
+leaks, a lease that expires into a double execution — and those tests run
+against a real Postgres rather than a mock, because the bugs found this way (a
+claim that took no lock, a NUL that Postgres will not store) do not exist in a
+mock. The engine's tests are pure and run in milliseconds, which is what makes it
+worth rerunning them on every change.
+
+## The lesson that matters most
+
+<Callout type="warn">
+  **A test that supplies the state whose construction is broken cannot fail.**
+</Callout>
+
+A feature-by-feature suite run against the built image found **five defects in
+the decider** that the engine's own tests could not — not because the tests were
+careless, but because each one handed the decider a starting state that the real
+system was never able to reach.
+
+<Mermaid
+  title="The blind spot, with FORK_JOIN_DYNAMIC as the clearest case"
+  chart={`
+flowchart LR
+  subgraph T["What 13 engine tests did"]
+    A["construct fanOut as already COMPLETED"] --> B["call decide"] --> C["assert branches are scheduled"]
+    C --> P["PASS"]
+  end
+  subgraph R["What production did"]
+    D["schedule fanOut"] --> E["operators are never queued"]
+    E --> F["decide only advances TERMINAL tasks"]
+    F --> G["fanOut sits SCHEDULED forever<br/>zero branches materialised"]
+  end
+`}
+/>
+
+`FORK_JOIN_DYNAMIC` is the clearest case: thirteen tests, all starting from
+`t('fanOut', COMPLETED)`, and the operator had **never once completed in
+production**. Every test proved what happens next, and nothing about how it got
+there.
+
+The other four:
+
+| Operator | What actually happened | Why the tests missed it |
+|---|---|---|
+| `DO_WHILE` | A loop with nothing after it **hung forever** — every task terminal, workflow `RUNNING`, nothing left to wake it | Every existing loop test put a task after the loop, so the pass always scheduled something |
+| `EXCLUSIVE_JOIN` | Returned a branch map like a plain `JOIN`, so `${join.output.field}` was unreadable without knowing which branch won — and fired off a *skipped* branch before the taken one finished | The tests asserted only *when* it fires, never what it outputs |
+| `SET_VARIABLE` | The next task read `null` from `${workflow.variables.x}` | No test read a variable back **in the same pass** |
+| `SUB_WORKFLOW` retry | A retried sub-workflow hung its parent forever, by three independent causes at once — and `retryCount` defaults to 3, so this was the ordinary path | Every test drove the child to **success** |
+
+Two of those were the worst failure this system has: a workflow stuck forever
+with nothing to act on — exactly what the stuck-workflow sweeper exists to shout
+about and exactly what the lost-wakeup rule was written to prevent.
+
+### How to avoid writing one
+
+- **Drive the state, do not construct it.** If a test needs a task in a
+  particular state, get the engine to put it there.
+- **Test the transition, not only the consequence.** "What happens once X is
+  complete" is a different test from "does X ever complete".
+- **Vary the shape that makes the bug visible.** A fork test with one task per
+  branch cannot distinguish branch heads from branch tips. A loop test with a
+  task after the loop cannot detect a loop that never closes. An `EVENT` test
+  with no successor cannot detect a successor repeated.
+- **Drive the failure path too.** Every sub-workflow test drove the child to
+  success; the whole defect lived on the other branch.
+
+## The layers
+
+<Mermaid
+  title="What each layer can and cannot see"
+  chart={`
+flowchart TB
+  L1["1. Engine unit tests<br/>vitest, no I/O, milliseconds"] --> B1["Blind to: anything the evaluator<br/>constructs — prefetch lists, DI wiring,<br/>whether a state is reachable"]
+  L2["2. Repository + integration<br/>testcontainers, real Postgres 18"] --> B2["Blind to: what the container wires,<br/>because each test builds its own<br/>collaborators"]
+  L3["3. Container-level server tests<br/>the object Nest actually built"] --> B3["Blind to: the bundle, the image,<br/>the browser"]
+  L4["4. scripts/smoke.mjs<br/>48 checks, the built image over HTTP"] --> B4["Blind to: per-feature semantics —<br/>it asks whether the artefact works at all"]
+  L5["5. scripts/e2e<br/>266 checks, feature by feature"] --> B5["Needs real brokers, a helper server<br/>and a signed-in user"]
+`}
+/>
+
+### 1. Engine unit tests
+
+`packages/engine/src/lib/*.spec.ts`, plus `core`. Pure, no decorators, no
+containers. Every operator, nesting combination and failure path. This is the
+primary safety net for semantics and it is the only layer fast enough to run
+constantly.
+
+Its structural blind spot is everything the *evaluator* constructs. Engine tests
+supply `resolvedRefs` by hand, so they cannot detect a prefetch list that omits
+join dependencies — which is exactly the bug that made joins never fire.
+
+### 2. Repository and integration tests
+
+`packages/store/src/lib/*.spec.ts`, against **real Postgres 18 in a
+Testcontainer** — one per test file, via
+`packages/store/src/lib/testing/postgres-harness.ts`.
+
+The harness detects the Docker socket rather than probing `/var/run/docker.sock`
+alone, because OrbStack, Colima and Rancher Desktop do not create that path and
+Testcontainers fails with "no container runtime" while `docker` works fine in
+the shell.
+
+These are written to **break** the design rather than demonstrate it:
+
+- 20 concurrent workers racing 200 tasks — zero duplicates.
+- A stale worker whose lease was reclaimed **cannot** acknowledge or renew.
+- Ten concurrent deciders claiming one workflow — exactly one wins.
+- The lost-wakeup rule proven three ways: a request arriving after the claim is
+  accepted, a request racing an uncommitted claim is not swallowed, and a
+  rollback restores the claim so a crashed decider loses nothing.
+- Crash recovery mid-evaluation; lease expiry returning real work with the stale
+  worker fenced out; flat per-evaluation cost across a 200-step workflow.
+
+The adversarial files are worth knowing by name: `evaluator-deep.spec.ts`
+(paths that were *assumed* to work rather than built deliberately — five
+defects, four silent), `isolation-and-races.spec.ts` (multi-tenancy and
+concurrency seams — three defects, one a cross-tenant queue leak) and
+`hardening.spec.ts`.
+
+### 3. Container-level server tests
+
+`packages/server/src/app/*.spec.ts`. The object under test is the one **Nest
+built**, not one the test constructed.
+
+<Callout type="warn">
+  **An optional dependency is a silent-disable waiting to happen**, and the
+  tests that would catch it cannot be the ones that construct the object
+  themselves.
+
+  This exact shape has disabled four features in this codebase. `Evaluator`
+  takes `WebhookRepository` as an optional constructor argument — optional
+  because unit tests build an evaluator without one — and the DI factory simply
+  did not pass it. `openCallback` began `if (!this.webhooks) return;` and
+  returned. `WAIT_FOR_WEBHOOK` was scheduled, went `IN_PROGRESS`, minted no
+  token, and waited for a callback that could not be sent. Twenty store tests
+  kept passing, because they wire the evaluator by hand.
+
+  The same thing happened to the human-task inbox, to the workflow-start outbox
+  handlers (so `SUB_WORKFLOW` was non-functional end to end in a phase the
+  tracker called complete), and to `UserRepository`'s group lookup — the fourth
+  is the first one a test caught rather than a live server.
+</Callout>
+
+Two fixes are needed, not one, and the second is the durable half: inject it,
+**and delete the quiet return**. Scheduling a `WAIT_FOR_WEBHOOK` with no
+repository now throws. A task that can only be completed by a callback is
+unrunnable without one, so a wiring mistake must be a loud failure at schedule
+time rather than a workflow that hangs until its timeout with no explanation
+anywhere.
+
+Some of these tests run against a **real socket** rather than `app.inject()`,
+which buffers a response until it ends — a stream that stays open would simply
+hang, and the only tests that passed would be the ones where nothing streamed.
+
+### 4. `scripts/smoke.mjs` — the release gate
+
+48 checks, a few minutes, run on every tag and on every push to `main`. It
+drives the **built image** over HTTP and deliberately does not import a line of
+this repository.
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+export DATABASE_URL=postgres://nodeflow:nodeflow@localhost:5433/nodeflow
+pnpm nf bootstrap --namespace default --json     # gives you a token
+KEY=nf_... pnpm smoke
+```
+
+It exits non-zero on the first failing expectation, so CI can gate on it. It
+covers health and readiness, refusing an unauthenticated request, registering a
+workflow, leasing a task as a worker, completing it with a fencing token,
+reading the run back, storing a secret, and waiting for a cron schedule to fire
+— which is the one check that proves the **poller role actually started** rather
+than merely being listed in `NODE_FLOW_ROLES`.
+
+Every defect it caught before 1.0.0 was invisible to
+`build test lint typecheck`, because the suite exercises the *source* and a
+release ships an *artefact*:
+
+| Found by | Defect |
+|---|---|
+| Starting the image | `Cannot find module 'tslib'` — the container died on boot. Nx's default `externalDependencies: 'all'` runs `webpack-node-externals` against the **workspace root** `node_modules`, which under pnpm holds only what the root declares — so whether a module was bundled depended on where it happened to be declared |
+| Reading the health response | The image reported ready with a schema **one migration behind the binary**, despite a comment promising otherwise |
+| Driving the API | Registering an existing version returned **400**, indistinguishable from a malformed definition |
+| Driving the API | `SET_VARIABLE` was **write-only**: `${workflow.variables.x}` silently resolved to `null` everywhere |
+| `docker compose up` | A collision with a local Postgres on 5432 surfaced as an authentication error rather than a port conflict |
+| Following the README | `pnpm nf bootstrap` — the first command after `docker compose up` — **did not exist** |
+| A browser console | React #418 on **every page**: `Dropdown.Trigger` is itself a button, so a `<Button>` inside it emitted markup no browser can parse back, and the server-rendered HTML was discarded on every page. Eleven call sites had copied it |
+| The same console, after that fix | React #418 again, on every page showing a time, for a second and unrelated reason — see the hydration rule in [Conventions](/docs/contributing/conventions) |
+| Reading the generated document | **19 endpoints validated a request body the OpenAPI document did not describe**, so the generated clients exposed them with no body parameter |
+
+Three things generalise from that list, and they are why the gate exists:
+
+- **Several were invisible to any check that reads source.** The externals bug
+  needs the bundle; the hydration bugs need a browser parsing real HTML; the
+  quickstart bug needs someone with no context typing the commands in order. The
+  second hydration bug needed the browser *and* a clock and timezone that differ
+  from the container's — it would not reproduce on a machine set to UTC.
+- **Most were silent.** No exception, no failing test — a null, a wrong status
+  code, a page quietly re-rendering, a client missing a parameter. The health
+  check is the sharpest case: its comment described the right behaviour while the
+  code did something weaker, and the comment is what everyone reads.
+- **Two came from a promise nothing enforced.** The fix that lasts is not
+  declaring the nineteen routes; it is the test that now walks every controller
+  and fails on the twentieth. **A spot check cannot find a gap in a
+  population** — the existing test asserted this property, correctly, about one
+  route.
+
+### 5. `scripts/e2e/` — feature by feature
+
+266 checks in eleven sections: `operators`, `tasks`, `platform`, `operations`,
+`interfaces`, `controls`, `brokers`, `remaining`, `access`, `cli`, and
+`conductor-sdk`. Same running
+image, different question — not "is this wired up at all" but "does each feature
+behave".
+
+```bash
+KEY=nf_... pnpm e2e              # everything
+KEY=nf_... pnpm e2e operators    # or one section
+```
+
+Some sections need the stack configured beyond its defaults, and each default is
+the right one — the header comment in `scripts/e2e/index.mjs` lists the exact
+commands:
+
+- **`tasks`** drives `HTTP` against an echo server on the host, which the SSRF
+  guard correctly refuses; set `NODE_FLOW_HTTP_ALLOW_PRIVATE=true` for the run.
+- **`operations`** signs in with a real user, because human tasks refuse a
+  service account by design — an API key names a fleet, not a person.
+- **`brokers`** needs real Redis, NATS, RabbitMQ and Kafka. Consumer groups,
+  `$`-positioned subscriptions and at-least-once delivery have no meaning
+  against a fake. The section reports which sources the stack has and skips what
+  is absent.
+- **`access`** exercises `JDBC` against a datasource the **operator** named,
+  because a definition is user input and may not supply its own connection
+  string.
+
+The `cli` section runs `nf` as a **child process**, checking exit codes and what
+lands on stdout and stderr, because importing its modules would test the same
+code through a different door and miss what is most likely to break: argument
+parsing, exit codes, and whether the binary runs at all.
+
+## Mutation discipline
+
+<Callout type="warn">
+  **Every bug fix needs a test that fails when the fix is reverted — and that
+  has been seen to fail.** A property test that has never been seen to fail has
+  not been shown to test anything.
+</Callout>
+
+This is not a nice-to-have here. Four separate times, a test that looked
+thorough survived the removal of the mechanism it was named after.
+
+**Three were tests passing for the wrong reason**, and all three were tests of a
+*refusal* satisfied by an earlier, unrelated refusal:
+
+| Test | Why it passed without the mechanism |
+|---|---|
+| The human-task claim race, "has exactly one winner under concurrency" | The read-then-check short-circuited, so whether two claims actually collided depended on interleaving, and the test reached the early return |
+| An event handler's cross-namespace refusal | The foreign workflow in the fixture had no task with that ref name, so the *task lookup* failed first and the test never reached the check it was named after |
+| A per-tenant quota under concurrency | The HTTP-level race approximated concurrency through one event loop; the replacement races `withStartQuota` directly, where the transactions are real |
+
+**One was a test that never reached the code at all.** Removing the
+algorithm/key-type binding in the JWT verifier broke nothing, because the
+alg-confusion test used `HS256`, which is rejected earlier as unsupported. The
+case the check actually guards — a token claiming `ES256` whose `kid` points at
+an RSA signing key — is only reachable in a key set containing both. A mutation
+distinguishes the two situations; reading the test does not.
+
+**Two weak tests were weak because the fixture was too tidy.** The `GET /queues`
+tests survived two load-bearing mutations: dropping a `FILTER` from
+`min("visibleAt")` changed nothing because the fixture used a *negative* delay,
+which is an available row in the past rather than a delayed one; and
+`count(DISTINCT "workerId")` to `count("workerId")` changed nothing because each
+worker held exactly one lease. **A fixture in which everything is symmetric
+cannot detect a query that confuses two things.**
+
+### Three ways a mutation lies to you
+
+- **A mutation that does not apply is indistinguishable from one that
+  survives**, and it argues for the *opposite* conclusion. A replace-first-match
+  edited a comment above the SQL rather than the SQL, because `FOR EACH ROW`
+  appeared twice. Verify the mutant changed what you meant it to change.
+- **A mutation that does not compile proves nothing.** Removing a deferral left
+  an unused import, `engine:build` failed, the tests never ran — and the grep
+  watching for failures saw silence and read it as a pass.
+- **Run it against the right suite.** Inverting the tag restrict/grant direction
+  survived the server suite and fails immediately in `core`, whose test asserts
+  `mayReachTags([], [])` directly. A surviving mutant is evidence to
+  investigate, not proof of a weak test.
+
+## Flakes are diagnosed, never retried
+
+<Callout type="warn">
+  **A flaky test is a race condition, or a quantisation error, that has not been
+  diagnosed yet.** The evaluation-watermark bug presented as a 1-in-3 flake and
+  Nx flagged it as flaky rather than failing. Retrying it would have hidden a
+  defect that strands workflows in production.
+</Callout>
+
+Both flakes actually found in this project turned out to be the same mistake in
+different clothes: **an assertion whose margin was smaller than the quantisation
+of what it measured.**
+
+- A scheduler test forced `nextRunAt` to one second ago against a once-a-minute
+  cron, so whenever a minute boundary fell inside that one-second window the
+  policy saw two occurrences — a backlog — and correctly dropped both. Roughly
+  one run in sixty. The test was asserting where the wall clock stood, not the
+  policy. The fix is a daily cron, which cannot produce a second occurrence
+  inside a one-second window at any time of day. **A fixture that forces a time
+  not on the schedule's own grid is testing the grid, not the policy.**
+- A login-backoff test compared two adjacent one-second tiers through a
+  `Math.ceil` over the difference between a Postgres timestamp and the host
+  clock, so a value that should be 1 read as 2 whenever the clocks differed by a
+  fraction of a millisecond. The fixture now separates the measurements by four
+  tiers, putting the assertion far outside the rounding.
+
+Neither was a race. Both were fixed by making the fixture mean one thing, and in
+both cases the behaviour the flaky version had been accidentally exercising was
+worth keeping — as a test of its own, handed a clock rather than racing one.
+
+## Counting traps
+
+Three ways a verification run has reported success while something was broken.
+All three share a shape: **a grep narrow enough to miss the error is part of the
+defect.**
+
+- **A failed suite is not a failed test.** `sql.spec.ts` could not import
+  `@testcontainers/postgresql`, and the run reported `Tests 86 passed` — because
+  a suite that fails to load has no tests to fail. The count being watched was
+  unchanged and green. Check `Test Files` for failures too.
+- **A build that half-succeeds is worse than one that fails.** A failed
+  `tasks:build` left an older `dist/` in place and the server bundled that. The
+  symptom looked exactly like a task-registration bug.
+- **Stale TypeScript state hides a real error.** `nx typecheck
+  --skip-nx-cache` skips *Nx's* cache, not TypeScript's incremental
+  `.tsbuildinfo`. When verifying that something *should* fail, clear `dist/` and
+  `*.tsbuildinfo` first.
+
+And one more, about which code a test is even running:
+
+<Callout type="warn">
+  Running `npx vitest` directly resolves workspace imports through the `import`
+  condition, loading each dependency's built `dist/` — so `store` tests exercised
+  a **stale `engine` build**, while `nx test` (which rebuilds dependencies first)
+  exercised current code. The two silently disagreed, and a fix that appeared not
+  to work had in fact landed. Every `vitest.config.mts` sets
+  `resolve.conditions: ['@node-flow-dev/source']` so both paths run the same
+  code. A new project needs that line.
+</Callout>
+
+## Testing against real things
+
+Brokers, databases and gRPC servers are exercised against the real thing in a
+container, not stubbed, because the parts worth testing are exactly the parts a
+fake would get wrong:
+
+- **Brokers** — consumer groups, `$`-positioned subscriptions, at-least-once
+  delivery, offset commits. Writing these surfaced that stopping the AMQP
+  consumer sometimes redelivered a handled message, for two separate reasons:
+  `stop()` closed the connection without waiting for in-flight handlers, and
+  amqplib multiplexes frames across channels so a connection close could
+  overtake a buffered ack.
+- **gRPC** — deadlines, status codes, and whether a nested message round-trips
+  as ordinary JSON the rest of the engine can address. A stub would only assert
+  that the executor calls a function.
+- **S3** — streamed bodies, key prefixes, paged listings, against MinIO.
+- **pgvector** — the same test against both `postgres:18-alpine` and
+  `pgvector/pgvector:pg18`, asserting identical ranking.
+- **JWT signing** — every signature verified by an **independent code path**
+  rather than asserting on the shape of the string. That caught the PSS padding
+  written as `1 << 5`, which is 32, where `RSA_PKCS1_PSS_PADDING` is 6: every
+  PS-family token was unsignable, and a shape-checking test would have passed.
+
+## Workflow tests, for users and for us
+
+`@node-flow-dev/testkit` is possible only because the engine is pure.
+
+- **`simulate()`** runs a definition in memory through the **real engine**,
+  mirroring exactly how the database evaluator applies commands — task identity,
+  static-ref loading, retries, skips, variables, sub-workflows run for real — and
+  applying the same registration rules. Outcomes are mocked per task reference;
+  unmocked tasks are **listed**, so a run that completes with a null output reads
+  as a missing mock rather than a broken workflow.
+- **`replay()`** re-derives a recorded execution through the engine from its
+  recorded outcomes. Against the run's own version, a divergence is an engine
+  determinism bug; against another version, it previews that change on runs that
+  already happened.
+
+Both are also *our* tests. Test mode found an engine bug the suite had not: a
+`FORK_JOIN` inside a `DO_WHILE` hung forever, because the engine treated "a task
+with this ref has finished" as "already scheduled" regardless of iteration.
+Writing `replay()` exposed that `simulate()` did not mirror the evaluator's
+`continuedInPass` fix, so a chain of `EVENT`s would have published twice in test
+mode.
+
+<Callout type="info">
+  `nf test` is checked with **no server and no credentials in the environment**,
+  and **both halves are asserted**: a correct expectation passes, and a wrong
+  one fails. A test runner that cannot fail is not one.
+</Callout>
+
+## What to write for a new feature
+
+- A **control** gets a test that tries to **defeat** it, not one that configures
+  it. A control that has no test trying to break it is not implemented. 200
+  workers racing a `concurrentExecLimit` of 5; two task types contending for one
+  semaphore permit; six runs against a budget of two a minute.
+- A **refusal** gets both halves. A team reads its own workflow *and not
+  another's*, and the **listing** hides it too rather than only the direct read.
+  And check *why* it was refused — three refusal tests here passed for the wrong
+  reason.
+- Anything reached through **dependency injection** gets a container-level test.
+  The wiring is what breaks, and only the container that does the wiring can
+  test it.
+- Anything with a **transaction boundary** gets a test that races the real
+  transactions, not one that approximates concurrency through one event loop.
+- Anything with a **timing assertion** gets a margin far outside the
+  quantisation of what it measures, and a fixture anchored to a computed
+  boundary rather than to `now`.
+- A **timeout or isolation guarantee** asserts elapsed time, not just failure.
+  The jq worker-thread test asserts it fails at 1.5s rather than 20s — if the
+  isolation is ever removed it stops failing and starts hanging the suite, which
+  is exactly what it would do to the server.
+- Anything that can **poison the process** asserts the system is still usable
+  afterwards. The QuickJS stack-limit test asserts the executor still works, not
+  merely that the task failed; without that second assertion the poisoning is
+  invisible.

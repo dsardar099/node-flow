@@ -1,0 +1,35 @@
+{
+  "name": "@node-flow-dev/server-e2e",
+  "version": "1.0.0",
+  "license": "LicenseRef-node-flow-1.0",
+  "private": true,
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "nx": {
+    "name": "server-e2e",
+    "tags": [
+      "scope:app",
+      "type:e2e"
+    ],
+    "implicitDependencies": [
+      "server"
+    ],
+    "targets": {
+      "e2e": {
+        "executor": "@nx/jest:jest",
+        "outputs": [
+          "{projectRoot}/test-output/jest/coverage"
+        ],
+        "dependsOn": [
+          "server:build",
+          "server:serve"
+        ],
+        "options": {
+          "jestConfig": "packages/server-e2e/jest.config.cts",
+          "passWithNoTests": true
+        }
+      }
+    }
+  }
+}

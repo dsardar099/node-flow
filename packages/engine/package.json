@@ -1,0 +1,42 @@
+{
+  "name": "@node-flow-dev/engine",
+  "version": "1.0.0",
+  "description": "The pure workflow decider: decide(blueprint, state) to commands. No framework, no I/O.",
+  "license": "LicenseRef-node-flow-1.0",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "!**/*.tsbuildinfo",
+    "!**/*.spec.*",
+    "!**/testing/**"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "@node-flow-dev/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "nx": {
+    "name": "engine",
+    "tags": [
+      "scope:pure",
+      "type:domain"
+    ]
+  },
+  "dependencies": {
+    "@node-flow-dev/core": "workspace:*",
+    "tslib": "^2.3.0"
+  }
+}

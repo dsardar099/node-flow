@@ -1,0 +1,75 @@
+packages:
+  - 'packages/*'
+
+# NestJS declares a wide web of *optional* peer dependencies — @nestjs/core peers
+# on platform-express, websockets and microservices, most of which we omit. pnpm
+# is stricter than npm here and would otherwise fail the install or flood it with
+# warnings for peers we deliberately do not want.
+autoInstallPeers: true
+strictPeerDependencies: false
+
+# Keep the strict symlinked layout. Combined with declaring dependencies in the
+# package that actually uses them (never at the workspace root), this is what
+# makes an undeclared import fail at module resolution rather than only at lint —
+# a second, non-skippable line of defence for the scope:pure boundary.
+# Never set nodeLinker: hoisted; it gives that guarantee up.
+nodeLinker: isolated
+
+# pnpm blocks dependency build scripts by default, which is the right
+# supply-chain default. These are the ones we have reviewed and genuinely need —
+# all of them compile or fetch a native binary:
+#   @parcel/watcher  native file watching used by Nx
+#   @swc/core        the Rust compiler behind our builds and Jest transform
+#   esbuild          fetches its platform binary; fumadocs-mdx compiles the docs
+#                    site's content macro with it, so the docs build needs it
+#   nx               postinstall wiring for the Nx daemon
+#   sharp            native image processing required by Next.js
+#   unrs-resolver    native module resolver used by eslint-plugin-import
+# Denied below are transitive build scripts pulled in by testcontainers. All
+# three are optional native accelerations, not requirements: ssh2 falls back to
+# pure JS crypto, cpu-features only exists to tune it, and protobufjs's
+# postinstall is a codegen step its prebuilt package does not need. Testcontainers
+# is verified working with all three denied.
+#
+# @confluentinc/kafka-javascript is denied for the same reason. It arrives with
+# @testcontainers/redpanda, which bundles it for its own helper clients; our
+# Kafka code and tests use kafkajs, so its librdkafka native build has never
+# run and the Kafka suites pass without it. pnpm had written a placeholder here,
+# which is not a boolean and made every install exit with an error.
+allowBuilds:
+  '@confluentinc/kafka-javascript': false
+  '@parcel/watcher': true
+  '@swc/core': true
+  cpu-features: false
+  esbuild: true
+  nx: true
+  protobufjs: false
+  sharp: true
+  ssh2: false
+  unrs-resolver: true
+  # Arrives under @scalar/api-client-react, which is Vue-based underneath. The
+  # vue-demi postinstall only picks which Vue 2/3 shim to link — nothing native
+  # — and the package does not work without it having run.
+  vue-demi: true
+
+minimumReleaseAgeExclude:
+  - '@ai-sdk/anthropic@4.0.56'
+  - '@ai-sdk/gateway@4.0.85'
+  - '@ai-sdk/google@4.0.74'
+  - '@ai-sdk/openai-compatible@3.0.51'
+  - '@ai-sdk/openai@4.0.69'
+  - '@ai-sdk/provider-utils@5.0.43'
+  - '@ai-sdk/provider@4.0.17'
+  - ai@7.0.105
+  - '@scalar/api-client-react@2.0.47'
+  - '@scalar/api-client@3.19.2'
+  - '@scalar/blocks@0.1.19'
+  - '@scalar/components@0.29.3'
+  - '@scalar/json-magic@0.14.0'
+  - '@scalar/oas-utils@0.20.2'
+  - '@scalar/openapi-upgrader@0.2.17'
+  - '@scalar/sidebar@0.11.4'
+  - '@scalar/workspace-store@0.63.0'
+  - '@scalar/agent-chat@0.12.33'
+  - '@scalar/api-reference-react@0.9.70'
+  - '@scalar/api-reference@1.69.2'

@@ -1,0 +1,32 @@
+{
+  "name": "@node-flow-dev/ui",
+  "version": "1.0.0",
+  "license": "LicenseRef-node-flow-1.0",
+  "private": true,
+  "nx": {
+    "name": "ui",
+    "tags": [
+      "scope:app",
+      "type:app"
+    ],
+    "sourceRoot": "packages/ui/src"
+  },
+  "dependencies": {
+    "@gravity-ui/icons": "2.22.0",
+    "@heroui/react": "^3.2.5",
+    "@heroui/styles": "^3.2.5",
+    "@node-flow-dev/core": "workspace:*",
+    "@scalar/api-reference-react": "^0.9.70",
+    "@tanstack/react-query": "^5.102.8",
+    "@xyflow/react": "12.11.6",
+    "next": "~16.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@node-flow-dev/engine": "workspace:*",
+    "@tailwindcss/postcss": "^4.3.3",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3"
+  }
+}

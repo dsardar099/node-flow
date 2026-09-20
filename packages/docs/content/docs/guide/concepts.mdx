@@ -1,0 +1,450 @@
+---
+title: Concepts
+description: Namespaces, definitions, executions, tasks, queues, references and the ${...} expression language.
+---
+
+Everything else in this guide assumes this vocabulary. It is short, and getting
+two of the terms confused — `name` versus `taskReferenceName`, definition versus
+execution — accounts for most of the time people lose early on.
+
+## The object model
+
+<Mermaid
+  title="What contains what"
+  chart={`
+flowchart TB
+  NS[Namespace<br/>slug, e.g. default] --> WD[Workflow definition<br/>name + version, immutable]
+  NS --> TD[Task definition<br/>name, retry and timeout policy]
+  NS --> SEC[Secrets, env vars, schemas, integrations]
+  NS --> PRIN[Users, groups, service accounts, API keys]
+  WD --> WE[Workflow execution<br/>one run, a UUIDv7]
+  WE --> TE[Task executions<br/>refName + iteration + attempt]
+  TD -.->|policy for| TE
+  TE --> Q[Queue<br/>taskDefName or taskDefName:domain]
+  Q --> WK[Your workers]
+`}
+/>
+
+### Namespace
+
+The tenant boundary, identified by a slug. Every URL under `/v1/ns/{ns}/...`
+carries one, and **a principal belongs to exactly one namespace**. The server
+checks that the namespace in the URL is the caller's own, so a credential cannot
+read another tenant by editing the path — cross-namespace access is a separate
+feature, not a wider scope string.
+
+Namespaces own everything a workflow touches: definitions, executions, secrets,
+environment variables, schemas, integrations, groups, quotas and the audit log.
+Creating one needs the `platform:admin` scope, which is deliberately the one
+scope that `admin` does **not** satisfy.
+
+The first namespace and its administrator are created on first boot — see
+[Quickstart](/docs/guide/quickstart).
+
+### Workflow definition
+
+A JSON document with a `name` and a `version`. Registering the same name with a
+new version adds a version; **a version is immutable once registered**, which is
+what lets a compiled blueprint be cached per `(name, version)` with no
+invalidation, and what guarantees that editing a definition cannot change a run
+already in flight.
+
+```bash
+# The latest version
+curl -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/metadata/workflows/fulfil_order"
+# A specific one
+curl -H "x-api-key: $NF_API_KEY" "$NF_URL/v1/ns/default/metadata/workflows/fulfil_order?version=1"
+```
+
+A run pins its version at start: `POST /v1/ns/default/executions/fulfil_order`
+with `{"version": 1}` runs v1 even after v2 exists.
+
+Names must match `^[a-zA-Z_][a-zA-Z0-9_.-]*$` and are at most 255 characters.
+
+### Task definition
+
+A *separate* object, keyed by name, holding **policy**: retries, backoff,
+timeouts, concurrency caps, rate limits, semaphores, input/output schemas, and
+`secretOutputFields`.
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/metadata/task-definitions" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"name":"charge","retryCount":3,"retryLogic":"EXPONENTIAL_BACKOFF","retryDelaySeconds":2,"scheduleToStartTimeout":120,"startToCloseTimeout":60}'
+```
+
+<Callout type="warn">
+  Task definitions are **optional but consequential**. A task whose `name` has
+  no definition gets the schema defaults (`retryCount: 3`,
+  `EXPONENTIAL_BACKOFF`, all timeouts 0/unbounded). A task inside a workflow may
+  override `retryCount` and nothing else — `retryLogic`, `retryDelaySeconds`,
+  timeouts and concurrency live on the task definition. Writing
+  `"retryDelaySeconds": 5` on a workflow task is silently dropped by the schema.
+</Callout>
+
+Full field list: [Execution controls](/docs/guide/execution-controls).
+
+### Workflow execution
+
+One run. Identified by a UUIDv7 (`workflowId`), which is time-ordered — that is
+why pagination is keyset-based rather than offset-based.
+
+| Status | Meaning |
+|---|---|
+| `RUNNING` | Live. Includes runs held by admission control (`awaitingAdmission: true`). |
+| `PAUSED` | In-flight tasks continue; nothing new is scheduled. |
+| `COMPLETED` | Terminal. |
+| `FAILED` | Terminal. `reasonForIncompletion` says why. |
+| `TIMED_OUT` | Terminal. A deadline was missed. |
+| `TERMINATED` | Terminal, by operator action or a `TERMINATE` task. |
+
+An execution also carries a `correlationId` (yours, for finding "the run for
+order 12345" later), an optional `idempotencyKey`, a `priority` (0–99), and
+mutable `variables`.
+
+### Task execution
+
+One attempt at one node of the graph. Its identity is the triple
+**`(refName, iteration, attempt)`**:
+
+- `refName` — the `taskReferenceName` from the definition;
+- `iteration` — the `DO_WHILE` pass number, 0 outside a loop;
+- `attempt` — 0 for the first run, incremented per retry.
+
+`UNIQUE (workflowId, refName, iteration)` in the database is what makes
+scheduling idempotent, which is what lets the engine always prefer a redundant
+evaluation over a missed one.
+
+<Mermaid
+  title="Task statuses"
+  chart={`
+stateDiagram-v2
+  [*] --> SCHEDULED: decider schedules it
+  SCHEDULED --> IN_PROGRESS: worker leases it
+  SCHEDULED --> WAITING: WAIT, HUMAN, WAIT_FOR_WEBHOOK
+  SCHEDULED --> SKIPPED: untaken SWITCH branch, or operator skip
+  IN_PROGRESS --> COMPLETED: report COMPLETED
+  IN_PROGRESS --> FAILED: report FAILED
+  IN_PROGRESS --> FAILED_WITH_TERMINAL_ERROR: report, never retried
+  IN_PROGRESS --> TIMED_OUT: a deadline fired
+  WAITING --> COMPLETED: timer, callback, signal, person
+  FAILED --> SCHEDULED: retry, if attempts remain
+  TIMED_OUT --> SCHEDULED: retry, only under timeoutPolicy RETRY
+  IN_PROGRESS --> CANCELED: workflow terminated
+  FAILED --> COMPLETED_WITH_ERRORS: the task was optional
+  COMPLETED --> [*]
+  COMPLETED_WITH_ERRORS --> [*]
+  FAILED_WITH_TERMINAL_ERROR --> [*]
+  SKIPPED --> [*]
+  CANCELED --> [*]
+`}
+/>
+
+Three predicates matter and are worth memorising:
+
+- **Terminal**: `COMPLETED`, `FAILED`, `FAILED_WITH_TERMINAL_ERROR`,
+  `TIMED_OUT`, `CANCELED`, `SKIPPED`, `COMPLETED_WITH_ERRORS`.
+- **Successful** (successors may proceed): `COMPLETED`, `SKIPPED`,
+  `COMPLETED_WITH_ERRORS`. `SKIPPED` counts as successful so that a `SWITCH`
+  inside a `FORK_JOIN` does not deadlock the `JOIN` on a branch that was
+  deliberately not taken.
+- **Retryable**: `FAILED` and `TIMED_OUT` only.
+  `FAILED_WITH_TERMINAL_ERROR` is how a worker says "this input will never
+  succeed, stop burning attempts".
+
+## name vs taskReferenceName
+
+This is the single most common source of confusion, so it gets its own section.
+
+```json
+{
+  "name": "charge_card",
+  "taskReferenceName": "charge",
+  "type": "SIMPLE"
+}
+```
+
+| Field | What it is |
+|---|---|
+| `name` | The **task definition name**. For `SIMPLE`, it is also the **queue name** workers poll. Policy (retries, timeouts, caps) is looked up by this. Several tasks in one workflow may share it. |
+| `taskReferenceName` | The **identity within this workflow**. What `${...}` expressions refer to. Must be unique across the whole definition, including inside fork branches, switch cases and loop bodies. Must match `^[a-zA-Z_][a-zA-Z0-9_-]*$`. |
+
+So in the example above, a worker polls the queue `charge_card`, and a
+downstream task reads `${charge.output.txnId}`.
+
+<Callout type="info">
+  Registration rejects a duplicate `taskReferenceName` anywhere in the
+  definition — including one produced by a `compensateWith` task — with a
+  precise error naming the reference. That is a compile-time failure, not a
+  runtime one.
+</Callout>
+
+## Queues, domains and workers
+
+<Mermaid
+  title="Routing a task to a worker fleet"
+  chart={`
+flowchart LR
+  T["Task: name=charge, domain=eu-west"] --> Q["Queue name: charge:eu-west"]
+  T2["Task: name=charge, no domain"] --> Q2["Queue name: charge"]
+  Q --> F1[Fleet polling charge:eu-west]
+  Q2 --> F2[Fleet polling charge]
+  Q -.->|scope needed| S1["queues:lease:charge:eu-west"]
+  Q2 -.->|scope needed| S2["queues:lease:charge"]
+`}
+/>
+
+A queue name is `taskDefName` or, with a domain, `taskDefName:domain`. Domains
+exist to isolate fleets — a canary deploy, a region, a tenant-specific pool, a
+laptop taking only its own work.
+
+A domain can be set in three places, most specific first:
+
+1. `taskToDomain` on the **start request**: `{"charge": "eu-west", "*": "canary"}`.
+   A task's own name wins over `*`.
+2. `taskToDomain` on a `SUB_WORKFLOW`'s `subWorkflowParam`, so a child lands on
+   the same fleet as its parent.
+3. `domain` on the **task in the definition**.
+
+Authorization follows the queue name exactly: leasing from `charge:eu-west`
+needs `queues:lease:charge:eu-west`. A grant of `queues:lease:charge` does
+**not** cover it. `queues:lease:charge:*` grants every domain of one task;
+`queues:lease:*` grants everything.
+
+### The worker protocol
+
+<Mermaid
+  title="Lease, heartbeat, report"
+  chart={`
+sequenceDiagram
+  autonumber
+  participant D as Decider
+  participant Q as Task queue (Postgres)
+  participant W as Your worker
+  D->>Q: insert task (SCHEDULED)
+  W->>Q: POST /queues/charge/lease  waitSeconds=30
+  Note over Q,W: request parks until work appears
+  Q-->>W: taskId, workflowId, leaseToken, resolved input
+  W->>Q: POST /tasks/{id}/heartbeat (extends lease)
+  W->>Q: POST /tasks/{id}/report  status + output
+  Q->>D: enqueue an evaluation
+  D->>Q: schedule the successors
+`}
+/>
+
+The **lease token** is a fencing token. Every write a worker makes carries it,
+so a worker whose lease expired — because it was slow, or partitioned — cannot
+report over the top of whoever holds the task now. That report is refused with
+`LEASE_EXPIRED`, which the SDK treats as a normal outcome rather than an error.
+
+`waitSeconds` is what makes an idle worker free: the request parks on the server
+and returns the instant a task is enqueued, instead of the worker choosing
+between latency and load. The server clamps it to `NODE_FLOW_MAX_POLL_SECONDS`
+(default 30).
+
+## The expression language
+
+Any string anywhere in `inputParameters` (at any depth, inside arrays, inside
+nested objects) may contain `${...}` references. They are resolved at the moment
+the task is scheduled, against the state the decider can see.
+
+### Scopes
+
+| Expression | Reads |
+|---|---|
+| `${workflow.input.field}` | The input the run was started with. |
+| `${workflow.output.field}` | The run's output, once set. |
+| `${someRef.output.field}` | The output of the task with `taskReferenceName: "someRef"`. |
+| `${someRef.input.field}` | That task's resolved input. |
+| `${global.name}` | A workflow variable, written by `SET_VARIABLE`. |
+| `${workflow.variables.name}` | The same thing, Conductor's spelling. |
+| `${env.NAME}` | A namespace environment variable. |
+| `${workflow.env.NAME}` | The same thing, Orkes' spelling. |
+| `${secrets.NAME}` | A sealed secret. Deferred until dispatch — see below. |
+
+Anything that is not one of the reserved scopes (`workflow`, `global`, `env`,
+`secrets`) is a **task reference name**, and registration fails if no task in the
+definition has it.
+
+### Types survive
+
+A string that is *exactly* one expression yields the referenced value with its
+type intact:
+
+```json
+{ "count": "${tally.output.total}" }
+```
+
+If `total` is the number `7`, the task receives `{ "count": 7 }` — not
+`{ "count": "7" }`. Anything else is interpolated as text:
+
+```json
+{ "label": "order ${workflow.input.id} for ${customer.output.name}" }
+```
+
+An expression that resolves to nothing becomes `null` when it is the whole
+string, and the empty string when interpolated. An object interpolated into a
+larger string is `JSON.stringify`-ed.
+
+### Paths
+
+Plain dotted paths are resolved directly and handle numeric array indices:
+
+```json
+{ "first": "${rows.output.items.0.id}" }
+```
+
+Anything that is not plain dotted names falls through to a JSONPath evaluator,
+which is what you want for brackets and filters:
+
+```json
+{
+  "firstId": "${fetch.output.body.items[0].id}",
+  "bigOrders": "${workflow.input.orders[?(@.total > 100)]}",
+  "count": "${fetch.output.body.items.length()}"
+}
+```
+
+The supported grammar, in full — it is a fixed grammar, not a library, because
+the engine is pure and filter expressions in the common libraries are evaluated
+as **script**, which would be both a dependency on a sandbox and a way for a
+definition to run code in the decider:
+
+| Syntax | Selects |
+|---|---|
+| `.name`, `['name']`, `["name"]` | A child. |
+| `[2]`, `[-1]` | An index; negative counts from the end. |
+| `[*]`, `.*` | Every child. |
+| `..name`, `..[*]` | Descendants at any depth. |
+| `[0,2]`, `['a','b']` | A union. |
+| `[1:3]`, `[:2]`, `[-2:]` | A slice. |
+| `[?(@.price > 10)]` | A filter. `@.path` or `@`, compared with `==`, `!=`, `<`, `<=`, `>`, `>=` to a number, string, `true`, `false` or `null`; or just `@.path` to test that it exists. |
+| `.length()` | Length of an array, string or object. |
+
+A **definite** path — children, indexes and `length()` only — yields the value
+itself. Anything that can select more than one node yields an **array** of every
+match, even when there is exactly one.
+
+### Secrets are deferred, not resolved
+
+`${secrets.STRIPE_KEY}` passes through evaluation **verbatim**. The decider has
+no key — it is pure — and resolving there would write the credential into the
+stored task input, where it would sit in the execution history, be returned by
+the execution API, and be rendered in the UI. It is substituted once, at
+dispatch, into the copy handed to the executor or the worker.
+
+The same mechanism covers **sealed output fields**: a task definition that
+declares `secretOutputFields: ["token"]` causes that field of the task's output
+to be stored as an encrypted envelope, and a downstream `${fetch.output.token}`
+stays unresolved until dispatch too.
+
+Compare with **masking**: `maskedFields` on a workflow definition replaces the
+value under any key of that name with `***` *wherever an execution is read*, at
+any depth. The stored value is untouched and workers still receive it. Masking
+hides from people; sealing hides from storage.
+
+### What the engine will not evaluate
+
+The decider is a pure function with no scripting engine, and two places where
+Conductor uses JavaScript are deliberately restricted. Both are rejected **at
+registration** rather than silently misbehaving at runtime:
+
+- A `SWITCH` with `evaluatorType: "javascript"` is refused. Use `value-param`
+  with an input-parameter name, or a `${...}` expression.
+- A `DO_WHILE` `loopCondition` must be `true`, `false`, or a single comparison
+  `left <op> right`. `$.loop['iteration'] < 3` — the Conductor spelling — is
+  refused, because as written it would be compared as literal text and the loop
+  would silently run exactly once.
+
+If you need real computation, that is what `INLINE` is for: it runs in a
+QuickJS-on-WASM sandbox, as a genuine system task, with its own timeout and
+memory budget.
+
+## Evaluation: what actually happens
+
+<Mermaid
+  title="One evaluation pass"
+  chart={`
+sequenceDiagram
+  participant E as Event (task completed)
+  participant DQ as Decide queue
+  participant DEC as Decider
+  participant PG as Postgres
+  E->>DQ: enqueue workflowId
+  DEC->>DQ: claim with SKIP LOCKED
+  DEC->>PG: load workflow + pending frontier + referenced task rows
+  DEC->>DEC: decide(blueprint, state) -- pure, no I/O
+  DEC->>PG: apply commands in ONE transaction
+  Note over DEC,PG: schedule tasks, set timers, write outbox, complete workflow
+  PG-->>DQ: further evaluations, if anything was scheduled
+`}
+/>
+
+Three properties of that loop are worth knowing because they explain behaviour
+you will see:
+
+- **It is event-driven, not a scan.** A pass costs O(what changed), not
+  O(workflow size). A loop that has run 10,000 times evaluates as cheaply as one
+  that has run once, because only the current iteration's tasks are loaded.
+- **It is idempotent.** Running the decider twice on the same state produces
+  commands that are safe to apply twice. The system therefore always errs toward
+  an extra evaluation rather than risking a missed one.
+- **Operators chain within a pass.** A `SWITCH` inside a `FORK_JOIN` inside a
+  `DO_WHILE` resolves in one evaluation rather than three, up to a depth of 64.
+  Past that, the workflow simply makes no progress and the stuck-workflow
+  sweeper surfaces it — which is far easier to diagnose than a decider spinning
+  on a row lock.
+
+## Triggers: what starts a run
+
+| Trigger | How |
+|---|---|
+| API | `POST /v1/ns/{ns}/executions/{name}` — see [API](/docs/guide/api). |
+| API, synchronous | `POST /v1/ns/{ns}/executions/{name}/execute` waits up to 60s for the result. |
+| REST gateway | `POST /v1/ns/{ns}/api/{workflow}` returns the workflow's **output** as the body. Opt-in with the `api:route` tag. |
+| MCP gateway | `POST /v1/ns/{ns}/mcp`, JSON-RPC. Opt-in with the `mcp:tool` tag. |
+| Schedule | A leased cron entry with a timezone, overlap and catch-up policy. |
+| Inbound webhook | A verified endpoint at `/v1/hooks/{id}`, plus an event handler on source `webhook`. |
+| Event handler | Kafka, NATS, AMQP, SQS, Redis Streams, or `internal`. |
+| Another workflow | `SUB_WORKFLOW` (waits) or `START_WORKFLOW` (fire and forget). |
+| A failure | `failureWorkflow` on a definition, started when a run ends `FAILED` or `TIMED_OUT`. |
+
+## Idempotency
+
+A start may carry an `idempotencyKey`, and `idempotencyStrategy` says what a
+repeat means:
+
+| Strategy | Behaviour |
+|---|---|
+| `RETURN_EXISTING` (default) | Returns the execution that already exists. |
+| `FAIL` | Refuses with 409. |
+| `FAIL_ON_RUNNING` | Refuses only while the existing execution is still live. |
+
+The window is the lifetime of the key row, not a time bound — a duplicate start
+is a duplicate whenever it lands.
+
+Internally the engine uses the same mechanism for the things it starts itself: a
+`START_WORKFLOW` task keys on `workflowId:refName:iteration`, and a failure
+workflow on `failure-workflow:{workflowId}`, so a replayed evaluation cannot
+start either twice.
+
+## Payload offloading
+
+Task and workflow inputs and outputs larger than
+`NODE_FLOW_PAYLOAD_THRESHOLD_BYTES` (default 256 KiB) are written to a blob
+store — the filesystem by default, S3 with `NODE_FLOW_BLOB_STORE=s3` — and the
+row carries a reference. The engine resolves lazily, only when an expression
+actually reads into the value, and a worker's leased input is always inlined, so
+handlers never have to know the mechanism exists.
+
+<Callout type="warn">
+  `fs` assumes every replica sees the same disk. More than one node without a
+  shared mount needs `s3`, or a task will eventually fail to read a payload
+  another server wrote.
+</Callout>
+
+## Next
+
+- [Workflows](/docs/guide/workflows) — every operator, with worked examples.
+- [System tasks](/docs/guide/system-tasks) — the tasks the server runs itself.
+- [Workers](/docs/guide/workers) — the other half of the protocol above.

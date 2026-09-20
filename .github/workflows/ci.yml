@@ -24,13 +24,16 @@ jobs:
       # Learn more at https://nx.dev/docs/reference/nx-cloud-cli#npx-nxcloud-startcirun
       - run: npx nx start-ci-run --distribute-on="3 linux-medium-js" --stop-agents-after="e2e"
 
-      # Cache node_modules
+      # pnpm must be installed before setup-node, so setup-node can find the
+      # store path for caching.
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: 'npm'
+          cache: 'pnpm'
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       # Prepend any command with "nx record --" to record its logs to Nx Cloud
       - run: npx nx record -- npx nx format:check --base="remotes/origin/main"
@@ -38,3 +41,61 @@ jobs:
       # Nx Cloud recommends fixes for failures to help you get CI green faster. Learn more: https://nx.dev/docs/features/ci-features/self-healing-ci
       - run: npx nx fix-ci
         if: always()
+
+  # The artefact, not the source.
+  #
+  # The job above reads this repository; this one builds the images and talks to
+  # them over HTTP, because that gap is where defects survive a green build.
+  # Every one found before 1.0.0 was invisible upstairs: a module webpack left
+  # out of the bundle so the container died on boot, a readiness probe that
+  # passed against a schema behind the binary, an expression that resolved to
+  # null instead of raising. None of those can fail a test that imports source.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the images and start the stack
+        run: docker compose -f docker/docker-compose.yml up -d --build
+
+      # Readiness, not liveness: it is the probe that asserts the schema matches
+      # the binary, so waiting on it also proves migrations ran.
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:3000/v1/health/ready > /dev/null; then
+              echo "ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "server never became ready"
+          exit 1
+
+      - name: Create a credential
+        run: |
+          TOKEN=$(DATABASE_URL=postgres://nodeflow:nodeflow@localhost:5433/nodeflow \
+            pnpm --silent nf bootstrap --namespace default --json | node -e '
+              let s = "";
+              process.stdin.on("data", (d) => (s += d));
+              process.stdin.on("end", () => process.stdout.write(JSON.parse(s).token));
+            ')
+          echo "::add-mask::$TOKEN"
+          echo "KEY=$TOKEN" >> "$GITHUB_ENV"
+
+      - run: node scripts/smoke.mjs
+
+      # Without this a failure above is a bare exit code: the reason is in the
+      # container's log, which nothing else in this job prints.
+      - name: Container logs
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs --no-color

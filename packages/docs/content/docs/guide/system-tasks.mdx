@@ -1,0 +1,1389 @@
+---
+title: System tasks
+description: Every task type the server runs for you — HTTP, scripts, jq, SQL, gRPC, events, webhooks, human approvals, JWTs and the AI family.
+---
+
+A **system task** is one the server executes itself, through the task registry,
+rather than handing to a worker. You do not write code for it and you do not run
+a process for it: you write `inputParameters` and the server does the work.
+
+This page is the reference for every one of them: what it takes, what it
+produces, how it fails, and what an operator must configure before it works at
+all.
+
+<Callout type="info">
+  A recurring theme: **anything that names an external endpoint is operator
+  configuration, referenced by name from the definition.** A workflow definition
+  is user input, it is stored, versioned, listed over the API and rendered in a
+  UI — so a definition that could supply its own database URL, gRPC address or
+  SMTP credentials would be both a credential leak and a way past the network
+  perimeter. `JDBC`, `GRPC`, `EMAIL`, `KAFKA_PUBLISH` and the AI integrations
+  all work this way, and all of them **refuse** a definition that tries to
+  supply the endpoint rather than silently ignoring it.
+</Callout>
+
+## Where they run
+
+<Mermaid
+  title="Who executes what"
+  chart={`
+flowchart LR
+  DEC[decider role] -->|operators, EVENT, KAFKA_PUBLISH| INPASS[resolved in the evaluation transaction]
+  POL[poller role] -->|system-task runner| REG[Task executor registry]
+  REG --> HTTP2[HTTP, HTTP_POLL, WEBHOOK]
+  REG --> SCRIPT[INLINE, JSON_JQ_TRANSFORM, BUSINESS_RULE]
+  REG --> DATA[JDBC, GRPC, EMAIL]
+  REG --> SEC[GET_SIGNED_JWT, UPDATE_SECRET]
+  REG --> AI[LLM, embeddings, MCP, AGENT, media]
+  CLOCK[timers and callbacks] -->|nothing executes these| WAITY[WAIT, WAIT_FOR_WEBHOOK, HUMAN, PULL_WORKFLOW_MESSAGES]
+`}
+/>
+
+`NODE_FLOW_SYSTEM_TASK_CONCURRENCY` (default 20) bounds how many system tasks
+one poller process runs at a time.
+
+---
+
+## HTTP
+
+Calls an external service. The most-used system task, and the one with the most
+ways to go wrong.
+
+| Input | Meaning |
+|---|---|
+| `uri` (or `url`) | Absolute URL. Required unless `service` is given. |
+| `service` | A registered HTTP service, instead of a URL. Mutually exclusive with `uri`. |
+| `path` | The path within that service. Joined, never resolved — `../../admin` cannot climb out. |
+| `query` | Object merged into the query string. |
+| `method` | `GET` (default), `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`. |
+| `headers` | Object of string or number values. Lower-cased. |
+| `body` | Object (serialised as JSON, with `content-type` defaulted) or string. Ignored for `GET`/`HEAD`. |
+| `timeoutMs` (or `connectionTimeOut`) | Per-request deadline. Default 30,000 ms. |
+
+Conductor nests these under `http_request`; **both spellings are accepted**, so
+a ported definition works unchanged.
+
+**Output:**
+
+```json
+{
+  "status": 200,
+  "headers": { "content-type": "application/json" },
+  "body": { "id": "ord_1", "total": 42 }
+}
+```
+
+So a downstream task reads `${fetch.output.body.total}` and
+`${fetch.output.status}`. A response whose `content-type` mentions JSON is
+parsed; anything else comes back as text, and a body that claims to be JSON and
+is not comes back as text rather than failing the task.
+
+### Failure classification
+
+| Outcome | Terminal? | Why |
+|---|---|---|
+| 2xx | — | Completed. |
+| 408, 425, 429, 500, 502, 503, 504 | no | Retryable — the server is having a moment. |
+| Any other 4xx/5xx | **yes** | The request was wrong and will be wrong again. |
+| Timeout, connection error | no | Transient by default. |
+| Blocked by the SSRF guard | **yes** | |
+| Response over `maxResponseBytes` (5 MiB) | **yes** | |
+| More than 3 redirects | **yes** | |
+
+### The SSRF guard
+
+This task is a request-forgery primitive: the server sits inside your network
+with whatever the perimeter lets it reach. So by default it **refuses private,
+loopback and link-local addresses**, checking the *resolved* address rather than
+the hostname — a name check alone is bypassed by pointing your own domain at
+127.0.0.1.
+
+- `NODE_FLOW_HTTP_ALLOW_PRIVATE=true` disables the guard entirely.
+- `NODE_FLOW_HTTP_ALLOWED_HOSTS=internal.example.com,metrics.svc` allows exact
+  hostnames while keeping it on.
+
+Redirects are followed **manually**, and every hop is re-checked; headers are
+dropped when the host changes, so an `Authorization` header is never forwarded
+to wherever a redirect points. `set-cookie` is stripped from the recorded
+response headers, because a task's output is stored, searchable and shown in the
+UI.
+
+<Callout type="warn">
+  A gap named rather than papered over: the guard resolves the hostname, then
+  `fetch` resolves again, and DNS can change in between — the classic rebinding
+  race. Closing it properly needs a custom dispatcher that pins the checked
+  address.
+</Callout>
+
+### Example
+
+```json
+{
+  "name": "fetch_order",
+  "taskReferenceName": "fetch",
+  "type": "HTTP",
+  "inputParameters": {
+    "uri": "https://api.example.com/orders/${workflow.input.orderId}",
+    "method": "GET",
+    "headers": { "authorization": "Bearer ${secrets.PARTNER_TOKEN}" },
+    "timeoutMs": 5000
+  }
+}
+```
+
+Using a registered service instead, so the credential never appears in the
+definition:
+
+```json
+{
+  "name": "fetch_order",
+  "taskReferenceName": "fetch",
+  "type": "HTTP",
+  "inputParameters": {
+    "service": "partner_api",
+    "path": "/orders/${workflow.input.orderId}",
+    "query": { "expand": "lines" },
+    "method": "GET"
+  }
+}
+```
+
+The service's own headers are applied **underneath** the task's, so a definition
+can add a correlation header but cannot overwrite the credential the integration
+supplies.
+
+---
+
+## HTTP_POLL
+
+Calls an endpoint repeatedly until a condition holds. The shape of every "kick
+off a job, wait for it to finish" integration.
+
+Takes everything `HTTP` takes, plus:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `terminationCondition` | — | **Required.** JavaScript, evaluated in the sandbox with the HTTP response bound as `$`. |
+| `pollCount` | `10` | Maximum attempts. |
+| `pollingInterval` / `pollIntervalSeconds` | `60` | Seconds between attempts. |
+| `pollingStrategy` | `FIXED` | `FIXED`, `LINEAR_BACKOFF`, `EXPONENTIAL_BACKOFF`. |
+
+**It does not sleep in its execution slot.** Each pass makes exactly one request
+and then either finishes or reports `IN_PROGRESS` with a callback delay,
+persisting the poll count and handing the slot back. An hour of waiting on a
+slow export costs one row, not an hour of concurrency, and a restart mid-poll
+costs one request.
+
+The condition sees the HTTP output spread into `$`, plus `$.pollCount`. So
+`$.body`, `$.status` and `$.headers` are all available.
+
+<Callout type="warn">
+  Write the condition defensively. A poll that has not reached the endpoint yet,
+  or hit a transient 5xx, arrives with no body — and a condition that **throws**
+  is treated as unrecoverable and fails the task terminally, because it would
+  throw identically on the next poll.
+</Callout>
+
+```json
+{
+  "name": "await_job",
+  "taskReferenceName": "await_job",
+  "type": "HTTP_POLL",
+  "inputParameters": {
+    "http_request": {
+      "uri": "https://api.example.com/jobs/${start_job.output.body.id}",
+      "method": "GET"
+    },
+    "terminationCondition": "return Boolean($.body) && $.body.status === 'done';",
+    "pollIntervalSeconds": 10,
+    "pollCount": 60,
+    "pollingStrategy": "LINEAR_BACKOFF"
+  }
+}
+```
+
+**Output:** the final HTTP output plus `pollCount`, so
+`${await_job.output.body.status}` and `${await_job.output.pollCount}`.
+
+Running out of polls is a **retryable** failure — the endpoint may simply have
+been slower than the budget allowed, and the retry policy is the right place to
+decide.
+
+---
+
+## INLINE
+
+Runs a snippet of JavaScript against the task's input. The escape hatch every
+orchestration system needs.
+
+| Input | Meaning |
+|---|---|
+| `expression` (or `script`) | **Required.** The JavaScript source. |
+| anything else | Bound as fields of `$`. |
+
+The whole input object is `$`, so `{"expression": "...", "n": 3}` gives the
+script `$.n === 3`.
+
+**Output:** whatever the script returns. An object becomes the output directly;
+anything else — a number, a string, an array — is wrapped as
+`{ "result": value }`. `undefined` becomes `{ "result": null }`.
+
+```json
+{
+  "name": "normalise",
+  "taskReferenceName": "normalise",
+  "type": "INLINE",
+  "inputParameters": {
+    "order": "${fetch.output.body}",
+    "expression": "const o = $.order; return { id: o.id, total: o.lines.reduce((s, l) => s + l.amount, 0), currency: o.currency.toUpperCase() };"
+  }
+}
+```
+
+### The sandbox
+
+`INLINE` runs in **QuickJS compiled to WebAssembly**. Not `node:vm`, which is
+not a sandbox — `this.constructor.constructor('return process')()` walks out of
+it in one line. Not `isolated-vm`, which is a genuine isolate but a native addon
+sharing an address space with the host.
+
+The guest gets **nothing but the input**: no `require`, no `fetch`, no timers,
+no `process`, no network. A task that needs the network has `HTTP`; a task that
+needs to do real work has a worker.
+
+| Limit | Variable | Default |
+|---|---|---|
+| CPU time | `NODE_FLOW_INLINE_TIMEOUT_MS` | 5,000 ms |
+| Memory | `NODE_FLOW_INLINE_MEMORY_BYTES` | 32 MiB |
+| Output size | — | 1 MiB |
+
+A script that throws fails **terminally**: it will throw again on identical
+input, so retrying only delays the error someone needs to see.
+
+---
+
+## JSON_JQ_TRANSFORM
+
+Reshapes JSON with a jq program — real jq 1.8.2 compiled to WebAssembly, not a
+subset, so programs pasted from the jq manual work.
+
+| Input | Meaning |
+|---|---|
+| `queryExpression` (or `expression`) | **Required.** The jq program. |
+| anything else | The document the program runs against. |
+
+The whole input object minus the program is the document, so a program addresses
+`.someKey`.
+
+**Output:**
+
+```json
+{
+  "result": { "total": 6, "count": 3 },
+  "resultList": [{ "total": 6, "count": 3 }]
+}
+```
+
+jq is a stream language: a program yields zero, one or many values. `result` is
+the first (or `null`), `resultList` is all of them.
+
+```json
+{
+  "name": "sum",
+  "taskReferenceName": "sum",
+  "type": "JSON_JQ_TRANSFORM",
+  "inputParameters": {
+    "items": "${make.output.items}",
+    "queryExpression": "{ total: ([.items[].n] | add), count: (.items | length) }"
+  }
+}
+```
+
+Read it downstream as `${sum.output.result.total}`.
+
+| Limit | Variable | Default |
+|---|---|---|
+| Run time | `NODE_FLOW_JQ_TIMEOUT_MS` | 5,000 ms |
+| Output size | `NODE_FLOW_JQ_MAX_OUTPUT_BYTES` | 1 MiB |
+
+jq cannot be interrupted, so the budget is enforced by killing the thread it
+runs in.
+
+---
+
+## JDBC
+
+Runs a statement against a relational database.
+
+| Input | Meaning |
+|---|---|
+| `datasource` | **Required.** The name of a datasource the operator configured. |
+| `statement` (or `sql`) | **Required.** The SQL. |
+| `parameters` | Array, bound positionally as `$1`, `$2`, … |
+
+**Output:** `{ "rows": [...], "rowCount": 12 }`.
+
+### Operator configuration
+
+```bash
+NODE_FLOW_SQL_DATASOURCES='{"reporting":"postgres://reader:pw@analytics:5432/warehouse"}'
+NODE_FLOW_SQL_STATEMENT_TIMEOUT_MS=30000
+NODE_FLOW_SQL_MAX_ROWS=1000
+```
+
+Empty (the default) disables the task entirely, so an install that needs none is
+not exposed at all.
+
+<Callout type="warn">
+  A definition supplying `url`, `connectionString` or `uri` is **refused
+  outright**, not ignored. If it could name the database, whoever can register a
+  workflow could point it at node-flow's own database and read every namespace's
+  executions and credential hashes. `HTTP`'s private-address guard is no defence
+  here, because an internal address is the normal case for a database.
+</Callout>
+
+**Parameters are bound, never interpolated.** There is no way to build a
+statement from values, so SQL injection has nowhere to go.
+
+```json
+{
+  "name": "recent_orders",
+  "taskReferenceName": "query",
+  "type": "JDBC",
+  "inputParameters": {
+    "datasource": "reporting",
+    "statement": "SELECT id, total FROM orders WHERE customer_id = $1 AND created_at > $2 ORDER BY created_at DESC LIMIT 50",
+    "parameters": ["${workflow.input.customerId}", "${workflow.input.since}"]
+  }
+}
+```
+
+Read a cell with `${query.output.rows[0].total}`. Driver errors are redacted,
+because a driver error can echo the connection string and a task's reason is
+stored and searchable.
+
+---
+
+## GRPC
+
+Calls a **unary** method on another service.
+
+| Input | Meaning |
+|---|---|
+| `service` | **Required.** The name of a service the operator configured. |
+| `method` | **Required.** The unary method name. |
+| `request` | The request message, as an object. |
+| `metadata` | Object of string or number values, sent as gRPC metadata. |
+| `timeoutMs` | Default 30,000 ms. |
+
+**Output:** `{ "response": { ... } }`.
+
+### Operator configuration
+
+```bash
+NODE_FLOW_GRPC_SERVICES='{
+  "pricing": {
+    "address": "pricing.svc:50051",
+    "protoPath": "/etc/node-flow/pricing.proto",
+    "package": "pricing.v1",
+    "service": "Pricing",
+    "tls": false,
+    "includeDirs": ["/etc/node-flow/protos"]
+  }
+}'
+```
+
+Every one of `address`, `protoPath`, `package` and `service` is required, and a
+missing one fails the **boot**, not the first workflow that needed it.
+
+<Callout type="warn">
+  As with `JDBC`, a definition supplying `address`, `target` or `host` is
+  refused. And as with `JDBC`, `HTTP`'s address guard does not transfer: almost
+  every gRPC target *is* a private address, so the guard would either refuse
+  every legitimate call or be disabled immediately and defend nothing.
+</Callout>
+
+**Streaming is deliberately unsupported.** A task has one input and one output
+and is retried as a unit; a stream has neither shape nor a meaningful retry. A
+workflow that needs a stream needs a worker.
+
+Retryability follows the gRPC status code: `INVALID_ARGUMENT`, `NOT_FOUND`,
+`ALREADY_EXISTS`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`,
+`UNIMPLEMENTED` and `UNAUTHENTICATED` are terminal; `UNAVAILABLE`,
+`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `ABORTED` and `INTERNAL` are things a
+healthy service does while it is briefly unhealthy, so they are transient.
+
+```json
+{
+  "name": "quote",
+  "taskReferenceName": "quote",
+  "type": "GRPC",
+  "inputParameters": {
+    "service": "pricing",
+    "method": "GetQuote",
+    "request": { "sku": "${workflow.input.sku}", "quantity": 3 },
+    "metadata": { "x-request-id": "${workflow.input.requestId}" }
+  }
+}
+```
+
+---
+
+## EVENT
+
+Publishes a message to a broker.
+
+<Callout type="info">
+  `EVENT` is resolved by the **decider**, not by a task runner, so the publish
+  lands in the same transaction as the task's completion. It goes to the
+  transactional outbox, and the relay delivers it after commit. The task
+  completes when the message is durably *queued*, not when the broker
+  acknowledges it — which is what stops a broker outage from failing workflows
+  that can do nothing about it.
+</Callout>
+
+| Input | Meaning |
+|---|---|
+| `sink` | **Required.** Where to publish. Checked at registration. |
+| `payload` | The message body, if given. |
+| anything else | Used as the body when there is no `payload`. |
+
+**Output:** `{ "sink": "nats:default:orders.created", "published": true }`.
+
+### Sink grammar
+
+| Sink | Goes to |
+|---|---|
+| `nats:<connection>:<subject>` | A NATS subject. |
+| `amqp:<connection>:<queue>` | An AMQP queue. |
+| `amqp:<connection>:<exchange>/<routingKey>` | An AMQP exchange. |
+| `sqs:<connection>:<queue>` | An SQS queue, by name. |
+| `redis:<connection>:<stream>` | A Redis stream. |
+
+`<connection>` is a key of the corresponding
+`NODE_FLOW_*_CONNECTIONS` environment variable — see
+[Configuration](/docs/guide/configuration).
+
+An event whose sink matches **no** registered handler dead-letters visibly
+rather than appearing to succeed. That is deliberate, and it is why
+`kafka:default:my-topic` written as an `EVENT` sink does nothing: Kafka has its
+own task.
+
+Each publish carries an idempotency key of `workflowId:refName:iteration`, so a
+subscriber can deduplicate across at-least-once redeliveries from the relay.
+
+```json
+{
+  "name": "announce",
+  "taskReferenceName": "announce",
+  "type": "EVENT",
+  "inputParameters": {
+    "sink": "nats:default:orders.created",
+    "payload": {
+      "orderId": "${workflow.input.orderId}",
+      "total": "${charge.output.amount}"
+    }
+  }
+}
+```
+
+---
+
+## KAFKA_PUBLISH
+
+An `EVENT` with a Kafka-shaped payload, and resolved the same way for the same
+reason.
+
+| Input | Meaning |
+|---|---|
+| `topic` | **Required.** Checked at registration. |
+| `cluster` | A key of `NODE_FLOW_KAFKA_CLUSTERS`. Defaults to `default`. |
+| `key` | Kafka's partitioning key. Same key, same partition, so per-entity ordering survives. Absent means round-robin. |
+| `value` | The message value. Absent, every remaining input key is used. |
+| `headers` | Kafka headers. |
+
+**Output:** `{ "topic": "orders", "cluster": "default", "queued": true }`.
+
+There is no partition or offset in the output, because the task completes when
+the message is durably queued rather than when Kafka acknowledges it.
+
+```json
+{
+  "name": "publish_order",
+  "taskReferenceName": "publish_order",
+  "type": "KAFKA_PUBLISH",
+  "inputParameters": {
+    "cluster": "default",
+    "topic": "orders.v1",
+    "key": "${workflow.input.customerId}",
+    "value": { "orderId": "${workflow.input.orderId}", "state": "placed" },
+    "headers": { "source": "node-flow" }
+  }
+}
+```
+
+```bash
+NODE_FLOW_KAFKA_CLUSTERS='{"default":{"brokers":["kafka-1:9092","kafka-2:9092"]}}'
+```
+
+---
+
+## WEBHOOK
+
+Delivers a **signed** event to an external URL. Deliberately a separate task
+from `HTTP`, because the things that make a webhook a webhook are exactly what
+generic HTTP does not do.
+
+| Input | Meaning |
+|---|---|
+| `url` (or `uri`) | **Required.** |
+| `event` (or `payload`) | The event body. |
+| `signingKey` (or `secret`) | HMAC-SHA256 key. Without it, no signature header is sent. |
+| `headers` | Extra headers. |
+
+The request body is an **envelope**:
+
+```json
+{
+  "id": "<the task id>",
+  "timestamp": 1737033600,
+  "workflowId": "0193c0f1-...",
+  "event": { "your": "payload" }
+}
+```
+
+and carries:
+
+| Header | Value |
+|---|---|
+| `x-nodeflow-delivery` | The task id — stable across retries, so a receiver deduplicating on it sees one delivery. |
+| `x-nodeflow-timestamp` | Unix seconds. |
+| `x-nodeflow-signature` | `sha256=<hex>` of `HMAC(secret, "<timestamp>.<body>")`. |
+
+The timestamp is bound **into** the signature, which is what makes it useful
+against replay: a captured delivery cannot be re-sent later with a fresh
+timestamp without invalidating the signature.
+
+**Output:** the `HTTP` output plus `{ "deliveryId": "...", "deliveredAt": 1737033600 }`
+— recorded on failure as well as success, because "we tried to deliver this id
+at this time and got a 503" is the question asked when a receiver says it never
+arrived.
+
+The transport is the `HTTP` executor, so the SSRF guard, redirect handling, size
+caps and header redaction all apply.
+
+```json
+{
+  "name": "notify_partner",
+  "taskReferenceName": "notify",
+  "type": "WEBHOOK",
+  "inputParameters": {
+    "url": "${workflow.input.callbackUrl}",
+    "signingKey": "${secrets.PARTNER_WEBHOOK_SECRET}",
+    "event": { "type": "order.shipped", "orderId": "${workflow.input.orderId}" }
+  }
+}
+```
+
+---
+
+## WAIT_FOR_WEBHOOK
+
+Pauses until a third party calls back. The engine mints an unguessable,
+single-use callback token for **this task instance**.
+
+| Input | Meaning |
+|---|---|
+| `expiresInSeconds` | How long the callback stays valid. Absent means no expiry. |
+| `signingKey` | If set, the delivery must carry a valid `x-nodeflow-signature`. |
+
+As soon as the task is scheduled, its output carries the address to hand out:
+
+```json
+{
+  "callbackToken": "0Hs2...",
+  "callbackPath": "/v1/ns/<namespaceId>/webhooks/0Hs2...",
+  "expiresAt": "2026-09-20T12:00:00.000Z"
+}
+```
+
+<Callout type="info">
+  A **path**, not a URL, deliberately: the server does not know what hostname it
+  is reached on, and guessing one would publish a callback address that does not
+  resolve. Prefix it with your public origin.
+</Callout>
+
+The third party posts to it with **no credential at all** — the unguessable
+token *is* the capability, and it completes exactly one task and grants nothing
+else. The posted body becomes the task's output, so the next task reads
+`${await_call.output.whatever_they_sent}`.
+
+| Delivery outcome | Status |
+|---|---|
+| Accepted | 200 |
+| Already delivered | 409 — a sender retrying its own success learns it landed |
+| Unknown or expired token | 4xx |
+
+Nothing dispatches this task and it holds no lease, so it can wait for days.
+Only the task definition's `timeoutSeconds` ends a callback that never arrives.
+
+```json
+{
+  "name": "await_signature",
+  "taskReferenceName": "await_call",
+  "type": "WAIT_FOR_WEBHOOK",
+  "inputParameters": {
+    "expiresInSeconds": 604800,
+    "signingKey": "${secrets.ESIGN_WEBHOOK_SECRET}"
+  }
+}
+```
+
+A typical pattern is an `HTTP` task that hands the callback path to the third
+party, followed by the wait:
+
+```json
+[
+  {
+    "name": "await_signature",
+    "taskReferenceName": "await_call",
+    "type": "WAIT_FOR_WEBHOOK",
+    "inputParameters": { "expiresInSeconds": 604800 }
+  },
+  {
+    "name": "request_signature",
+    "taskReferenceName": "request",
+    "type": "HTTP",
+    "inputParameters": {
+      "uri": "https://esign.example.com/envelopes",
+      "method": "POST",
+      "body": {
+        "document": "${workflow.input.documentId}",
+        "webhookUrl": "https://flows.example.com${await_call.output.callbackPath}"
+      }
+    }
+  }
+]
+```
+
+---
+
+## WAIT
+
+Pauses for a duration, or until an instant, or until something signals it.
+
+| Input | Meaning |
+|---|---|
+| `duration` or `seconds` | A number of seconds, or a duration string. |
+| `until` | An ISO-8601 instant. |
+| *(none of the above)* | Waits to be signalled. |
+
+Duration strings follow Conductor's spelling: `"30s"`, `"10m 30s"`, `"2h"`,
+`"1 day 4 hours"`. Units accepted are `s/sec/secs/second/seconds`,
+`m/min/mins/minute/minutes`, `h/hr/hrs/hour/hours`, `d/day/days`. A bare number
+is seconds.
+
+<Callout type="warn">
+  An **unparseable** `until` or `duration` ends the wait *at once* rather than
+  failing the task. A typo in a date must not become a workflow that waits
+  forever, and the value is visible in the task input either way. A `WAIT` with
+  **no** timing at all waits for a signal — that is the intentional case, and it
+  is why "present but unparseable" and "absent" are treated differently.
+</Callout>
+
+`WAIT` is never queued. It holds no lease and costs nothing while it waits — a
+seven-day wait is one row and one timer.
+
+**Output:** `{ "waited": true }` when the timer fires, or whatever a signal
+supplied when one ends it.
+
+```json
+{
+  "name": "cool_off",
+  "taskReferenceName": "cool_off",
+  "type": "WAIT",
+  "inputParameters": { "duration": "3 days" }
+}
+```
+
+```json
+{
+  "name": "until_monday",
+  "taskReferenceName": "until_monday",
+  "type": "WAIT",
+  "inputParameters": { "until": "${compute.output.nextBusinessDay}" }
+}
+```
+
+Signal a waiting `WAIT` the same way as a `YIELD`:
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/executions/$WF_ID/signal" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"taskRef":"cool_off","status":"COMPLETED","output":{}}'
+```
+
+---
+
+## HUMAN
+
+Puts an entry in somebody's inbox and waits for them to answer.
+
+| Input | Meaning |
+|---|---|
+| `title` | What a person reads in a list of twenty. Falls back to the reference name. |
+| `description` | Longer context. |
+| `assignments` | An escalation **chain**: `[{ "user": "ada@example.com", "slaMinutes": 30 }, { "group": "payments" }]`. The first link is the initial assignee. |
+| `assigneeId` | A user id, when there is no chain. |
+| `candidateGroup` | A group **name** to route to, when there is no chain. |
+| `form` | A JSON-schema form object, or `{ "template": "refund_form", "version": 2 }` naming a registered template. |
+| `dueInSeconds` | Sets a due date. |
+| `autoClaim` | `true` claims it for the named assignee immediately. |
+| `assignmentCompletionStrategy` | `LEAVE_OPEN` (default) or `TERMINATE`. |
+| `triggers` | `[{ "on": "COMPLETED", "workflow": "notify_requester", "version": 2 }]`. Events: `ASSIGNED`, `CLAIMED`, `RELEASED`, `COMPLETED`, `SKIPPED`, `TIMED_OUT`. |
+
+**Output:** whatever the person submitted when completing it.
+
+Everything that names a person or a team is **resolved when the task opens** —
+emails to user ids, group names to group ids, form templates and trigger
+workflows to versions. A chain escalating to a team that does not exist would
+otherwise be discovered only when the first SLA window closed, with nobody
+watching. An unresolvable name fails **that task** with a precise reason rather
+than throwing and re-deriving the same failure forever.
+
+<Callout type="warn">
+  The inbox API requires a **user** principal. An API key is refused by design:
+  claiming and completing are statements about who did the work, and a service
+  account belongs to a fleet rather than to anyone. That means a script cannot
+  approve its own refunds.
+</Callout>
+
+Like `WAIT`, a `HUMAN` task is never queued and holds no lease, so it can sit
+for weeks.
+
+```json
+{
+  "name": "approve_refund",
+  "taskReferenceName": "approve",
+  "type": "HUMAN",
+  "inputParameters": {
+    "title": "Refund ${workflow.input.amount} to ${workflow.input.customer}",
+    "description": "Raised by ${workflow.input.agent}.",
+    "assignments": [
+      { "user": "${workflow.input.reviewer}", "slaMinutes": 120 },
+      { "group": "payments-leads", "slaMinutes": 240 },
+      { "group": "finance" }
+    ],
+    "dueInSeconds": 86400,
+    "form": { "template": "refund_decision", "version": 1 },
+    "triggers": [{ "on": "TIMED_OUT", "workflow": "escalate_refund" }]
+  }
+}
+```
+
+The inbox is at `GET /v1/ns/{ns}/human-tasks`, with
+`POST .../{id}/claim`, `/release`, `/reassign`, `/skip` and `/complete`. The
+namespace-wide operator view is `GET /v1/ns/{ns}/human-tasks/search`.
+
+---
+
+## PULL_WORKFLOW_MESSAGES
+
+Waits for messages pushed into this execution from outside.
+
+| Input | Default | Meaning |
+|---|---|---|
+| `batchSize` | `1` | How many messages to take at once. Clamped to 100. |
+
+Push a message:
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/executions/$WF_ID/messages" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"payload":{"kind":"price_update","value":42}}'
+```
+
+Messages are ordered and durable: one pushed before a pull task exists is kept
+until one asks. Pushing to a terminal execution is refused — nothing would ever
+read it. Push and pull both take the execution's row lock, so a message pushed
+while an evaluation is scheduling the pull cannot be missed by both.
+
+---
+
+## BUSINESS_RULE
+
+A deliberately small declarative evaluator: a list of `when` conditions against
+the input, returning the first match's `then`.
+
+| Input | Meaning |
+|---|---|
+| `rules` | **Required.** An array of `{ "when": {...}, "then": ... }`. A rule with no `when` always matches. |
+
+Each key of `when` must **equal** the corresponding input value (compared by
+JSON equality). There are no operators, no ranges, no expressions — anything
+more expressive belongs in `INLINE`, where it is sandboxed.
+
+**Output:** `{ "matched": true, "result": <the then value> }`, or
+`{ "matched": false, "result": null }` when nothing matched. No match is a
+*result*, not a failure.
+
+```json
+{
+  "name": "shipping_tier",
+  "taskReferenceName": "tier",
+  "type": "BUSINESS_RULE",
+  "inputParameters": {
+    "country": "${workflow.input.country}",
+    "express": "${workflow.input.express}",
+    "rules": [
+      { "when": { "country": "GB", "express": true }, "then": { "carrier": "dpd", "sla": "next-day" } },
+      { "when": { "country": "GB" }, "then": { "carrier": "royalmail", "sla": "48h" } },
+      { "then": { "carrier": "dhl", "sla": "international" } }
+    ]
+  }
+}
+```
+
+---
+
+## UPDATE_TASK
+
+Records a value against the workflow without doing anything. The escape hatch
+for "mark this step done because something outside the system says so".
+
+**Output:** whatever it was given.
+
+```json
+{
+  "name": "record_manual_check",
+  "taskReferenceName": "manual_check",
+  "type": "UPDATE_TASK",
+  "inputParameters": { "checkedBy": "${workflow.input.operator}", "outcome": "clear" }
+}
+```
+
+---
+
+## UPDATE_SECRET
+
+Writes a value into the namespace's secret store from inside a workflow. The use
+it exists for is **token refresh**: call an identity provider, get a short-lived
+credential, store it so later runs can use it through `${secrets.NAME}` without
+calling the provider again.
+
+| Input | Meaning |
+|---|---|
+| `name` (or `key`) | **Required.** The secret name. |
+| `value` | **Required.** A non-empty string. |
+
+**Output:** `{ "name": "PARTNER_TOKEN", "stored": true }` — the name and nothing
+else. Returning the value would write it into this task's output as well.
+
+Requires `NODE_FLOW_SECRET_KEYS` to be configured; without it the task fails
+saying so rather than storing anything in clear.
+
+<Callout type="warn">
+  **This does not retroactively protect the value.** Anything reaching this task
+  arrived through the workflow — almost always as `${refresh.output.token}` —
+  and that producing task's output was persisted, in clear, when it completed.
+  Writing it here makes *future* reads protected; it does not remove the copy
+  already in the execution history.
+
+  To close that gap, declare `secretOutputFields: ["token"]` on the **producing
+  task's definition**. That field is then stored as an encrypted envelope and
+  stays unresolved until dispatch.
+</Callout>
+
+```json
+{
+  "name": "store_token",
+  "taskReferenceName": "store_token",
+  "type": "UPDATE_SECRET",
+  "inputParameters": {
+    "name": "PARTNER_TOKEN",
+    "value": "${refresh.output.access_token}"
+  }
+}
+```
+
+---
+
+## GET_SIGNED_JWT
+
+Mints a signed JWT for calling a downstream service — the Google, Apple,
+Snowflake and enterprise-API pattern of signing a short-lived assertion with a
+private key.
+
+| Input | Default | Meaning |
+|---|---|---|
+| `algorithm` | `RS256` | `HS256/384/512`, `RS256/384/512`, `ES256/384/512`, `PS256/384/512`. |
+| `privateKey` (or `secret`) | — | **Required.** A PEM private key, or the HMAC secret. |
+| `privateKeyId` | — | Sets the `kid` header. |
+| `issuer` | — | `iss`. |
+| `subject` | — | `sub`. |
+| `audience` | — | `aud`. Any JSON value. |
+| `scopes` | — | `scope`. |
+| `payload` | — | Extra claims, applied **first** so registered claims cannot be overwritten. |
+| `ttlInSecond` | `3600` | Sets `exp`. |
+
+`iat`, `nbf` and `exp` are always set, in seconds since the epoch.
+
+**Output:** `{ "token": "eyJ...", "expiresAt": "2026-09-19T15:00:00.000Z", "algorithm": "RS256" }`.
+The key is deliberately **not** echoed into the output, which is persisted,
+indexed and displayed.
+
+`none` is deliberately absent from the algorithm list: it is a legal JWT
+algorithm and the single most exploited weakness in JWT's history.
+
+```json
+{
+  "name": "mint_assertion",
+  "taskReferenceName": "jwt",
+  "type": "GET_SIGNED_JWT",
+  "inputParameters": {
+    "algorithm": "RS256",
+    "privateKey": "${secrets.GOOGLE_SA_KEY}",
+    "privateKeyId": "${secrets.GOOGLE_SA_KEY_ID}",
+    "issuer": "svc@project.iam.gserviceaccount.com",
+    "audience": "https://oauth2.googleapis.com/token",
+    "scopes": "https://www.googleapis.com/auth/cloud-platform",
+    "ttlInSecond": 3600
+  }
+}
+```
+
+---
+
+## EMAIL
+
+Sends a message over SMTP.
+
+| Input | Meaning |
+|---|---|
+| `transport` | A key of `NODE_FLOW_SMTP_TRANSPORTS`. Defaults to the first configured. |
+| `to` | **Required.** A string or an array. At most 100 recipients. |
+| `cc`, `bcc`, `replyTo` | Optional. |
+| `from` | Falls back to the transport's `from`. |
+| `subject` | |
+| `body` (or `text`) and/or `html` | **At least one is required.** |
+
+**Output:** `{ "messageId": "...", "accepted": [...], "rejected": [...], "transport": "default" }`.
+
+```bash
+NODE_FLOW_SMTP_TRANSPORTS='{
+  "default": {
+    "host": "email-smtp.eu-west-1.amazonaws.com",
+    "port": 587,
+    "secure": false,
+    "user": "AKIA...",
+    "pass": "...",
+    "from": "ops@example.com"
+  },
+  "staging": { "host": "localhost", "disabled": true }
+}'
+```
+
+SMTP rather than one vendor's API, because it is the interface every provider
+speaks: SES, SendGrid, Postmark, Mailgun and the relay in someone's data centre
+are all transport entries rather than five executors. `disabled: true` makes a
+transport **fail loudly** rather than swallowing mail — a staging install that
+quietly drops mail teaches everyone that the task works, and the surprise
+arrives in production.
+
+There is no templating. `${...}` expressions already interpolate the subject and
+body before this task runs, and a second template language would mean two
+syntaxes and two places to look when the wrong name appears in someone's inbox.
+
+```json
+{
+  "name": "confirm",
+  "taskReferenceName": "confirm",
+  "type": "EMAIL",
+  "inputParameters": {
+    "transport": "default",
+    "to": "${workflow.input.email}",
+    "subject": "Order ${workflow.input.orderId} confirmed",
+    "html": "<p>Thanks! Tracking: ${ship.output.trackingId}</p>"
+  }
+}
+```
+
+---
+
+## NOOP
+
+Completes immediately with an empty output. A join point, a placeholder, or a
+deliberate marker in a diagram. Resolved by the decider — see
+[Workflows](/docs/guide/workflows#noop).
+
+---
+
+# AI tasks
+
+The AI family shares one idea: **the provider, its key and the models it allows
+come from a named integration**, so a definition names `llmProvider` and never
+carries an endpoint or a credential. Retries, timeouts and rate limits are the
+task definition's, like any system task, which is how a flaky provider is
+handled without every workflow re-implementing backoff.
+
+Providers: `openai`, `anthropic`, `google`, `openai_compatible` (which requires
+a `baseUrl`, and covers gateways, vLLM, Together, Groq and the rest).
+
+Integrations are managed at `/v1/ns/{ns}/integrations`, prompts at
+`/v1/ns/{ns}/prompts`, and vector indexes at `/v1/ns/{ns}/vector-indexes`.
+
+## Common inputs
+
+| Input | Applies to | Meaning |
+|---|---|---|
+| `llmProvider` (or `integration`) | all | **Required.** The integration name. |
+| `model` | all | Defaults to the integration's first allowed model. A model the integration does not allow is refused terminally. |
+| `prompt` | text, image, video | Inline prompt text. |
+| `promptName` / `promptVersion` | text, image, video | A stored prompt instead. |
+| `promptVariables` | text, image, video | Fills `${name}` placeholders in the template. **A missing variable is an error**, not an empty string — a prompt that silently lost its subject still gets an answer, and a confidently wrong one. |
+| `guardrails` | text, chat, image, audio, video, agent | See below. |
+
+## Guardrails
+
+```json
+{
+  "guardrails": {
+    "redactPII": ["email", "phone", "card", "ssn"],
+    "blockedTerms": ["password", "/\\bssn\\b/i"],
+    "blockedOutputTerms": ["guarantee"],
+    "maxInputCharacters": 20000
+  }
+}
+```
+
+- **Redaction** replaces emails, phone numbers, card numbers (Luhn-checked, so
+  an order number is not mistaken for one) and US social security numbers with a
+  marker **before the request leaves node-flow**, and reports how many of each it
+  replaced — not what they were. `redactPII: true` enables all four.
+- **Blocked terms** stop a request that mentions them, or fail a task whose
+  answer does. A term is a case-insensitive whole word or phrase, or a
+  `/regex/flags`.
+- **A size cap** stops a runaway template from sending a whole document.
+
+A blocked request or answer fails **terminally** — the same input gives the same
+verdict — and a blocked answer is withheld from the output.
+
+When anything was redacted or blocked, the task output carries a `guardrails`
+report.
+
+---
+
+## LLM_TEXT_COMPLETE
+
+One completion. Requires `prompt` or `promptName`.
+
+| Input | Meaning |
+|---|---|
+| `instructions` | The system prompt. |
+| `temperature`, `topP`, `maxTokens` | Passed through. |
+| `stopWords` | Array of stop sequences. |
+| `jsonOutput` | `true` parses the answer as JSON and **fails the task** when it is not, because the next task reading `${ask.output.result.field}` would otherwise get nothing and carry on. Markdown fences are stripped first. |
+
+**Output:**
+
+```json
+{
+  "result": "…the answer, or a parsed object when jsonOutput is true…",
+  "finishReason": "stop",
+  "model": "gpt-4o-mini",
+  "llmProvider": "openai",
+  "usage": { "inputTokens": 412, "outputTokens": 96, "totalTokens": 508 }
+}
+```
+
+```json
+{
+  "name": "classify",
+  "taskReferenceName": "classify",
+  "type": "LLM_TEXT_COMPLETE",
+  "inputParameters": {
+    "llmProvider": "openai",
+    "model": "gpt-4o-mini",
+    "instructions": "Classify the ticket. Answer only with JSON.",
+    "prompt": "Ticket: ${workflow.input.body}",
+    "jsonOutput": true,
+    "temperature": 0,
+    "guardrails": { "redactPII": true }
+  }
+}
+```
+
+Read it as `${classify.output.result.category}`.
+
+## LLM_CHAT_COMPLETE
+
+The same, with a conversation.
+
+| Input | Meaning |
+|---|---|
+| `messages` | **Required.** `[{ "role": "user", "message": "..." }]`. Both `message` and `content` are accepted; roles `user`, `assistant`/`model`, `system`. |
+| `instructions` (or `promptName`) | Becomes the system message. |
+
+Output is identical to `LLM_TEXT_COMPLETE`.
+
+## LLM_GENERATE_EMBEDDINGS
+
+| Input | Meaning |
+|---|---|
+| `text` (or `texts`) | **Required.** A string or an array of strings. |
+| `embeddingModel` | Overrides `model` for the embedding call. |
+
+**Output:** `{ "result": [...], "dimensions": 1536, "model": "...", "usage": {...} }`.
+One string in gives one vector out; an array gives an array of vectors.
+
+## CHUNK_TEXT
+
+Splits text into overlapping chunks, preferring paragraph, then sentence, then
+word boundaries. Needs no integration at all.
+
+| Input | Default | |
+|---|---|---|
+| `text` | — | **Required.** Up to 1,000,000 characters. |
+| `chunkSize` | `1000` | |
+| `chunkOverlap` | `100` | |
+
+**Output:** `{ "result": ["chunk", ...], "count": 12 }`.
+
+## LLM_INDEX_TEXT
+
+Chunks, embeds and stores text in a named vector index inside Postgres.
+
+| Input | Meaning |
+|---|---|
+| `index` | **Required.** Letters, digits, `.`, `_`, `-`, up to 100 chars. |
+| `docId` | **Required.** Re-indexing the same `docId` replaces its chunks. |
+| `text` | **Required.** |
+| `metadata` | Object stored alongside each chunk. |
+| `chunkSize`, `chunkOverlap` | As `CHUNK_TEXT`. |
+
+**Output:** `{ "index": "handbook", "docId": "hr-01", "chunks": 12, "dimensions": 1536, "model": "...", "usage": {...} }`.
+
+## LLM_SEARCH_INDEX
+
+| Input | Default | |
+|---|---|---|
+| `index` | — | **Required.** |
+| `query` | — | **Required.** |
+| `topK` | `5` | Clamped to 1–100. |
+| `minScore` | — | Similarity floor. |
+
+**Output:**
+
+```json
+{
+  "result": [{ "docId": "hr-01", "chunk": 3, "text": "...", "metadata": {}, "score": 0.83 }],
+  "context": "the matched passages, joined by blank lines",
+  "count": 5,
+  "model": "text-embedding-3-small"
+}
+```
+
+`context` exists because the usual next step pastes the matches into a prompt.
+An index searched with a different model than it was built with is refused by
+dimension rather than returning nonsense scores.
+
+### RAG in two tasks
+
+```json
+{
+  "name": "rag_answer",
+  "version": 1,
+  "inputParameters": ["question", "index", "llmProvider"],
+  "tasks": [
+    {
+      "name": "find_passages",
+      "taskReferenceName": "find_passages",
+      "type": "LLM_SEARCH_INDEX",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llmProvider}",
+        "index": "${workflow.input.index}",
+        "query": "${workflow.input.question}",
+        "topK": 5
+      }
+    },
+    {
+      "name": "answer",
+      "taskReferenceName": "answer",
+      "type": "LLM_TEXT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llmProvider}",
+        "instructions": "Answer using only the passages provided. If they do not contain the answer, say so.",
+        "prompt": "Question: ${workflow.input.question}\n\nPassages: ${find_passages.output.context}"
+      }
+    }
+  ],
+  "outputParameters": { "answer": "${answer.output.result}" }
+}
+```
+
+## LIST_MCP_TOOLS and CALL_MCP_TOOL
+
+MCP client tasks. The server is an integration — its URL and secret-backed
+headers are configured by an administrator and named by the task. Streamable
+HTTP only; a stdio server would mean spawning processes chosen by workflow
+authors on the node-flow host.
+
+| Input | Task | Meaning |
+|---|---|---|
+| `mcpServer` (or `integration`) | both | **Required.** The MCP integration name. |
+| `method` (or `tool`) | `CALL_MCP_TOOL` | **Required.** The tool name. |
+| `arguments` | `CALL_MCP_TOOL` | The tool's arguments. |
+
+**`LIST_MCP_TOOLS` output:** `{ "result": [{ "name", "description", "inputSchema" }], "count": 7 }`.
+
+**`CALL_MCP_TOOL` output:** `{ "content": <raw MCP content>, "text": "text parts joined", "result": <structured content, if any> }`.
+
+A tool that reports an error fails the task **terminally**: that is the tool's
+answer, and retrying the same arguments gives the same answer.
+
+```json
+{
+  "name": "search_issues",
+  "taskReferenceName": "issues",
+  "type": "CALL_MCP_TOOL",
+  "inputParameters": {
+    "mcpServer": "github",
+    "method": "search_issues",
+    "arguments": { "query": "repo:acme/api is:open label:bug" }
+  }
+}
+```
+
+## AGENT
+
+A model that works towards a goal by calling tools.
+
+<Mermaid
+  title="The AGENT loop"
+  chart={`
+sequenceDiagram
+  participant T as AGENT task
+  participant M as Model
+  participant W as Workflow tool (child run)
+  T->>M: messages + tool definitions
+  M-->>T: tool calls
+  T->>W: start child run (idempotent on the tool call id)
+  Note over T: task reports IN_PROGRESS and RELEASES its slot
+  W-->>T: child finishes
+  T->>M: tool results, next step
+  M-->>T: final answer, no tool calls
+  Note over T: COMPLETED with the transcript attached
+`}
+/>
+
+| Input | Default | Meaning |
+|---|---|---|
+| `prompt` or `messages` | — | **Required.** The starting conversation. |
+| `instructions` (or `promptName`) | — | The system prompt. |
+| `tools` | `[]` | See below. |
+| `maxSteps` | `10` | Clamped to 1–50. Running out **fails** the task, with the transcript attached, rather than completing with a half-finished answer that looks real. |
+| `temperature` | — | |
+
+### Tool kinds
+
+```json
+"tools": [
+  { "type": "mcp", "mcpServer": "github", "include": ["search_issues", "create_issue"] },
+  { "type": "workflow", "name": "refund_order", "toolName": "issue_refund", "description": "Refunds an order" },
+  { "type": "index", "index": "handbook", "topK": 8 }
+]
+```
+
+| Kind | What the model gets |
+|---|---|
+| `mcp` | Every tool of that MCP integration, or only those in `include`. |
+| `workflow` | A workflow definition, run as a **child execution** with its own history, retries and permissions. Its input schema becomes the tool schema. |
+| `index` | Retrieval over a vector index, exposed as `search_<index>`. |
+
+### Why the loop is ours
+
+The AI SDK can run a tool loop in memory, and a crash would lose it. Here the
+conversation lives in the **task's state**, so progress survives a restart. A
+workflow tool is started with an idempotency key derived from the tool call, so
+a replayed step never starts it twice. While that child runs the task reports
+`IN_PROGRESS` instead of holding an execution slot: an agent waiting an hour on
+a human approval costs nothing.
+
+**Output:**
+
+```json
+{
+  "result": "the final answer",
+  "finishReason": "stop",
+  "model": "gpt-4o",
+  "steps": [{ "step": 1, "text": "...", "toolCalls": [...], "toolResults": [...] }],
+  "stepCount": 3,
+  "usage": { "inputTokens": 3120, "outputTokens": 480, "totalTokens": 3600 }
+}
+```
+
+## PARSE_DOCUMENT
+
+Extracts text from a document.
+
+| Input | Meaning |
+|---|---|
+| `url` | Fetched with the same SSRF guard as `HTTP`, re-checked on every redirect hop. |
+| `base64` + `mediaType` | An inline document instead. |
+| `maxCharacters` | Truncates, and reports `truncated: true`. |
+
+**Output:** `{ "result": "the text", "mediaType": "application/pdf", "characters": 18422, "pages": 7, "source": { "url": "...", "bytes": 240112 } }`.
+
+## GENERATE_IMAGE
+
+| Input | Default | |
+|---|---|---|
+| `prompt` or `promptName` | — | **Required.** |
+| `size` | provider default | `WIDTHxHEIGHT`, e.g. `1024x1024`. |
+| `n` | `1` | Clamped to 1–4. |
+
+**Output:** `{ "images": [{ "base64": "...", "mediaType": "image/png" }], "count": 1, "model": "..." }`.
+
+## GENERATE_AUDIO
+
+| Input | |
+|---|---|
+| `text` | **Required.** Up to 10,000 characters. |
+| `voice` | Provider-specific. |
+| `format` | Provider-specific. |
+
+**Output:** `{ "audio": { "base64": "...", "mediaType": "audio/mpeg" }, "model": "..." }`.
+
+## GENERATE_VIDEO
+
+Video generation is a long job, so this task **yields between polls** in the same
+way `HTTP_POLL` does: it starts the generation, reports `IN_PROGRESS`, and
+resumes from its own state on the next pass.
+
+| Input | Default | |
+|---|---|---|
+| `prompt` or `promptName` | — | **Required.** |
+| `aspectRatio` | — | `WIDTH:HEIGHT` such as `16:9`, or `adaptive`. |
+| `resolution` | — | `WIDTHxHEIGHT` such as `1280x720`. |
+| `n` | `1` | Clamped to 1–4. |
+| `durationSeconds`, `fps`, `seed` | — | Passed through. |
+
+The deadline is the **task's own**, not the provider's: a job that never reports
+completion fails rather than polling forever.
+
+<Callout type="warn">
+  Base64 media in a task output counts against the payload threshold
+  (`NODE_FLOW_PAYLOAD_THRESHOLD_BYTES`, default 256 KiB), so generated images,
+  audio and video are almost always offloaded to the blob store. On a multi-node
+  install, set `NODE_FLOW_BLOB_STORE=s3`.
+</Callout>
+
+---
+
+## Next
+
+- [Execution controls](/docs/guide/execution-controls) — the retry, timeout and
+  concurrency policy every task above obeys.
+- [Configuration](/docs/guide/configuration) — the environment variables named
+  on this page.
+- [Workflows](/docs/guide/workflows) — the operators these tasks sit between.

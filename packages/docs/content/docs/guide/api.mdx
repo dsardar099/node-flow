@@ -1,0 +1,918 @@
+---
+title: The REST API
+description: Authentication, scopes, the shape of every surface, the generated clients, and the Conductor compatibility layer.
+---
+
+Everything is at `/v1`, except the Conductor compatibility layer, which owns its
+own paths. The full machine-readable contract is served, unauthenticated, at:
+
+```
+GET /v1/openapi.json
+```
+
+OpenAPI 3.1. It is public deliberately — the document describes the *shape* of
+the API, not its contents; every endpoint in it still requires credentials and
+each carries the scopes it needs. Gating the description behind authentication
+mostly obstructs the person trying to work out how to authenticate.
+
+<Callout type="info">
+  There is **no Swagger UI on the server**. Serving one would pull a static-file
+  plugin back into a JSON API. The document is the contract; the dashboard
+  renders a reference from it, and any viewer can point at that URL.
+</Callout>
+
+## Path shape
+
+| Prefix | What lives there |
+|---|---|
+| `/v1/ns/{ns}/…` | Everything namespaced: definitions, executions, queues, tasks, secrets, schedules, human tasks, integrations. |
+| `/v1/auth/…` | Token exchange, `whoami`, API keys, service accounts. |
+| `/v1/namespaces` | The tenants themselves. Needs `platform:admin`. |
+| `/v1/health`, `/v1/health/live`, `/v1/health/ready` | Unauthenticated probes. |
+| `/v1/metrics` | Prometheus. Needs `metrics:read`. |
+| `/v1/hooks/{id}` | Inbound webhook deliveries. Unauthenticated by design. |
+| `/v1/ns/{ns}/webhooks/{token}` | `WAIT_FOR_WEBHOOK` callbacks. Unauthenticated by design. |
+| `/v1/openapi.json` | The document. |
+| `/conductor/api/…` | Conductor wire compatibility. **Not** under `/v1`. |
+
+`{ns}` is a namespace **slug**. The server checks it against the caller's own
+namespace, so a credential cannot reach another tenant by editing the path.
+
+---
+
+## Authentication
+
+<Mermaid
+  title="Every mechanism resolves to one Principal"
+  chart={`
+flowchart LR
+  K["X-API-Key: nf_..."] --> P[Principal]
+  B["Authorization: Bearer jwt"] --> P
+  C["Session cookie + x-csrf-token"] --> P
+  M[mTLS client certificate] --> P
+  O[OIDC workload identity token] --> P
+  P --> AUTHZ["Every authorization check reads ONLY the Principal:<br/>type, id, namespaceId, scopes, tagGrants, resourceGrants"]
+`}
+/>
+
+That indirection is the whole point: adding a mechanism touches the
+authenticator chain and nothing else.
+
+### API keys
+
+Long-lived, presented directly. Right for a CLI, a CI job or a script, where a
+token-exchange round trip on every invocation buys nothing.
+
+```bash
+curl -X POST "$NF_URL/v1/auth/api-keys" \
+  -H "x-api-key: $ADMIN_KEY" -H 'content-type: application/json' \
+  -d '{"name":"ci","scopes":["executions:start","executions:read"],"expiresAt":"2027-01-01T00:00:00Z"}'
+```
+
+The key is returned **once**. `expiresAt` is optional — no expiry is allowed,
+but the caller has to say so by omitting it.
+
+```bash
+curl -H "x-api-key: nf_..." "$NF_URL/v1/auth/whoami"
+```
+
+An API key may be sent four ways, because different clients know how to send
+different headers:
+
+```
+X-API-Key: nf_...
+Authorization: Bearer nf_...
+X-Authorization: Bearer nf_...     # what Conductor's SDKs send
+X-Authorization: nf_...            # Conductor's header carries no scheme
+```
+
+A value matching `nf_…` is treated as an API key rather than verified as a JWT,
+wherever it arrives.
+
+Manage them at `GET /v1/auth/api-keys` and `DELETE /v1/auth/api-keys/{id}`.
+
+### Service accounts
+
+A key and secret exchanged for short-lived tokens. Right for a **long-running
+worker fleet**: verification is a signature check with no database round trip,
+which matters when workers poll continuously, and a captured token is useless
+within the hour.
+
+```bash
+# Create one (needs admin)
+curl -X POST "$NF_URL/v1/auth/service-accounts" \
+  -H "x-api-key: $ADMIN_KEY" -H 'content-type: application/json' \
+  -d '{"name":"charge-fleet","scopes":["queues:lease:charge","tasks:report"]}'
+
+# Exchange it
+curl -X POST "$NF_URL/v1/auth/token" \
+  -H 'content-type: application/json' \
+  -d '{"keyId":"…","secret":"…"}'
+```
+
+```json
+{ "accessToken": "eyJ…", "tokenType": "Bearer", "expiresIn": 3600, "scopes": ["queues:lease:charge", "tasks:report"] }
+```
+
+`POST /v1/auth/token` is the **only unauthenticated write** in the API — it *is*
+the authentication step. It uses a body rather than query parameters, because
+query strings land in access logs, browser history and proxy telemetry.
+
+A failed exchange gives one message for every failure mode. Distinguishing "no
+such key" from "wrong secret" hands an attacker a key-enumeration oracle for
+free.
+
+The TypeScript SDK handles the exchange and the refresh:
+
+```ts
+new NodeFlowClient({
+  baseUrl: 'http://localhost:3000',
+  namespace: 'default',
+  serviceAccount: { keyId: '…', secret: '…' },
+});
+```
+
+### Human sessions
+
+```bash
+curl -c jar -X POST "$NF_URL/v1/ns/default/users/login" \
+  -H 'content-type: application/json' \
+  -d '{"email":"ada@example.com","password":"…"}'
+```
+
+Sets a session cookie and a `nf_csrf` cookie. Every subsequent request sends
+both the cookie and an `x-csrf-token` header carrying the CSRF cookie's value.
+
+`GET /v1/auth/me` is deliberately namespace-free: a browser holding a session
+knows neither its namespace slug nor its scopes until it asks, and every other
+route needs the namespace in the path.
+
+Other session routes: `POST /v1/ns/{ns}/users/logout`, `/logout-all`,
+`/change-password`.
+
+<Callout type="warn">
+  The **human-task inbox requires a user principal**. An API key is refused by
+  design: claiming and completing a task are statements about who did the work,
+  and a service account belongs to a fleet rather than to anyone. A script
+  cannot approve its own refunds.
+</Callout>
+
+SSO is at `/v1/auth/sso/...` (OIDC) and `/v1/auth/saml/...` (SAML 2.0), both
+configured through environment variables — see
+[Configuration](/docs/guide/configuration#sso-humans).
+
+### Machine identity without a stored secret
+
+- **mTLS** — `NODE_FLOW_MTLS_ENABLED`, when this process terminates TLS itself
+  with a CA bundle. A SPIFFE URI in the certificate's SANs is honoured.
+- **OIDC workload identity** — `NODE_FLOW_OIDC_ISSUERS`, for GitHub Actions,
+  Kubernetes projected tokens and similar. The issuer is matched **exactly**;
+  nothing looser is offered.
+
+Bindings are managed at `/v1/ns/{ns}/workload-identities`.
+
+---
+
+## Scopes
+
+`resource:action`, optionally ending in `:*`.
+
+| Scope | Grants |
+|---|---|
+| `workflows:read` | Read definitions. |
+| `workflows:write` | Register and delete definitions, schedules and event handlers. |
+| `executions:read` | Read and search runs, queue depth, worker activity. |
+| `executions:start` | Start runs. |
+| `executions:write` | Pause, resume, retry, rerun, terminate, skip, cancel a task, re-run tasks, signal. |
+| `queues:lease:<queue>` | Lease from one queue. |
+| `tasks:report` | Heartbeat, log and report a task the caller holds. |
+| `human-tasks:read` / `human-tasks:write` | The inbox, and claiming/completing. |
+| `metrics:read` | Scrape `/v1/metrics`. |
+| `admin` | Namespace, service-account, API-key, secret and quota administration. **Satisfies every scope below.** |
+| `platform:admin` | Create and list **namespaces**. |
+
+### Matching rules
+
+Exact, or by trailing wildcard, and nothing else. No prefix matching, no
+hierarchy inference: `executions:read` must never accidentally satisfy
+`executions:readwrite`, and a scope language rich enough to be surprising is one
+that will eventually grant something nobody intended.
+
+```
+queues:lease:charge        matches  queues:lease:charge
+queues:lease:charge:*      matches  queues:lease:charge:eu-west
+queues:lease:*             matches  every queue
+admin                      matches  everything EXCEPT platform:admin
+platform:admin             matches  only itself
+```
+
+<Callout type="info">
+  `platform:admin` is the one scope `admin` does **not** satisfy, and the reason
+  is the whole point of multi-tenancy: a namespace administrator runs their
+  tenant; deciding that another tenant should exist, and seeing the list of who
+  the tenants are, is a different job with a different blast radius. Folding it
+  into `admin` would mean every tenant's administrator could enumerate every
+  other tenant by name.
+</Callout>
+
+An insufficient scope is a **403** naming what is missing, which is safe — the
+caller already knows who they are — and turns an opaque refusal into something
+self-service:
+
+```json
+{ "error": "insufficient_scope", "message": "missing scope(s): workflows:write", "required": ["workflows:write"] }
+```
+
+Refusals on audited routes are **recorded in the audit log**, because "who tried
+to read the production secrets and was refused" is the question an incident
+starts with.
+
+### Tags and resource grants
+
+Beyond scopes, two narrower mechanisms.
+
+**Tags restrict; they never grant.** An untagged resource is governed by scopes
+alone. A resource carrying `team:payments` additionally requires a group whose
+`tagGrants` match at least one of its tags. So adding a tag can only *narrow*
+access — the mistake it invites is locking yourself out, which is loud. The
+opposite model fails quietly, because a resource nobody has tagged yet would be
+reachable by everyone.
+
+**Resource grants** go the other way: access to one workflow (or a name prefix,
+or everything carrying a tag, or `*`) for someone who does not hold the
+namespace-wide scope.
+
+```bash
+curl -X PUT "$NF_URL/v1/ns/default/permissions" \
+  -H "x-api-key: $ADMIN_KEY" -H 'content-type: application/json' \
+  -d '{
+    "subjectType": "GROUP",
+    "subjectId": "0193c0f1-…",
+    "resourceType": "WORKFLOW",
+    "resource": "refund_*",
+    "access": ["READ", "EXECUTE"]
+  }'
+```
+
+`resource` is an exact name, a `prefix*`, `tag:key:value`, or `*`. `access` is
+any of `READ`, `EXECUTE`, `UPDATE`, `DELETE` — and **any access implies
+reading**, since you cannot run or change what you may not see.
+
+The two combine as an **OR**: the principal holds the scope *and* can reach the
+resource's tags, **or** a grant names the resource. A grant naming a resource
+reaches it even when it is tagged — naming the one workflow a contractor may run
+is a more specific statement than a tag rule.
+
+---
+
+## Errors
+
+Every failure has the same envelope, and every `error` value is a **stable
+code**. Branch on the code, not on the status or the message: messages are for
+humans and will change.
+
+```json
+{
+  "error": "LIMIT_EXCEEDED",
+  "message": "workflow \"nightly\" is at its maxConcurrentExecutions limit",
+  "details": { "control": "maxConcurrentExecutions", "running": 1 }
+}
+```
+
+| Code | Status | Meaning |
+|---|---|---|
+| `INVALID_DEFINITION` | 400 | A definition failed validation or referential integrity. |
+| `COMPILATION_FAILED` | 400 | Structurally valid but could not compile to a blueprint. |
+| `EXPRESSION_FAILED` | 400 | An expression could not be evaluated. |
+| `UNKNOWN_TASK_TYPE` | 400 | |
+| `UNKNOWN_TASK_REFERENCE` | 400 | |
+| `INVALID_ARGUMENT` | 400 | Malformed request — a cursor that does not decode, a bad search term. |
+| `NOT_FOUND` | 404 | |
+| `CONFLICT` | 409 | |
+| `TERMINAL_STATE` | 409 | The execution has finished and takes no more changes. |
+| `LEASE_EXPIRED` | 409 | A worker's write was refused by the fencing check. Its view is stale; nothing is wrong with its authorization. |
+| `LIMIT_EXCEEDED` | 429 | A quota, cap, rate limit or retry budget tripped. Carries `Retry-After` where one can be computed. |
+| `INTERNAL` | 500 | A bug. Nothing revealing is returned. |
+| `unauthenticated` | 401 | No usable credential. |
+| `insufficient_scope` | 403 | |
+
+A 429 always carries `Retry-After` where a wait can be computed — a client that
+is told to come back later and not told when comes back immediately.
+
+---
+
+## Definitions
+
+```bash
+# Register (versions are immutable; re-registering the same version is a conflict)
+POST   /v1/ns/{ns}/metadata/workflows
+
+# Compile-check without registering
+POST   /v1/ns/{ns}/metadata/workflows/validate
+
+# Convert a BPMN 2.0 process into a draft definition. A DRAFT, never a
+# registration: an imported diagram is a starting point someone reviews.
+POST   /v1/ns/{ns}/metadata/workflows/import-bpmn   { "xml": "<?xml …" }
+
+GET    /v1/ns/{ns}/metadata/workflows
+GET    /v1/ns/{ns}/metadata/workflows/{name}[?version=N]
+PUT    /v1/ns/{ns}/metadata/workflows/{name}/tags
+DELETE /v1/ns/{ns}/metadata/workflows/{name}?version=N
+
+POST   /v1/ns/{ns}/metadata/task-definitions
+GET    /v1/ns/{ns}/metadata/task-definitions
+GET    /v1/ns/{ns}/metadata/task-definitions/{name}
+DELETE /v1/ns/{ns}/metadata/task-definitions/{name}
+
+# Bundles
+POST   /v1/ns/{ns}/metadata/export    { "workflows": ["a","b"] }
+POST   /v1/ns/{ns}/metadata/import    { "bundle": {...}, "dryRun": true }
+```
+
+---
+
+## Executions
+
+### Starting
+
+```bash
+POST /v1/ns/{ns}/executions/{name}
+```
+
+```json
+{
+  "input": { "orderId": "A-1", "amount": 99 },
+  "version": 3,
+  "correlationId": "order-A-1",
+  "idempotencyKey": "order-A-1",
+  "idempotencyStrategy": "RETURN_EXISTING",
+  "priority": 50,
+  "variables": { "stage": "new" },
+  "taskToDomain": { "charge": "eu-west", "*": "canary" }
+}
+```
+
+```json
+{
+  "workflowId": "0193c0f1-…",
+  "status": "RUNNING",
+  "defName": "checkout",
+  "defVersion": 3,
+  "startedAt": "2026-09-19T14:22:03.112Z"
+}
+```
+
+| Field | Notes |
+|---|---|
+| `input` | Validated against `inputSchema` when the definition declares one. |
+| `version` | Omitted means the latest at start; the run then **pins** it. |
+| `idempotencyStrategy` | `RETURN_EXISTING` (default), `FAIL` (409), `FAIL_ON_RUNNING`. |
+| `priority` | 0–99. |
+| `taskToDomain` | Keys are task definition names or `*`; at most 100 routes. |
+
+Admission control runs **before the row is created**: a definition at its
+`maxConcurrentExecutions` is refused rather than admitted and stalled, because
+the latter looks identical to a broken worker pool from outside.
+
+### Starting and waiting
+
+```bash
+POST /v1/ns/{ns}/executions/{name}/execute
+```
+
+Same body plus `waitForSeconds` (default 10, max 60) and an optional
+`waitUntilTaskRef`.
+
+```json
+{ "workflowId": "0193c0f1-…", "reached": true, "status": "COMPLETED", "output": { "receipt": "txn_abc" } }
+```
+
+On timeout it answers `reached: false` with the state so far, and **the
+execution continues** — a caller that stopped waiting has not cancelled
+anything.
+
+### Reading
+
+```bash
+GET /v1/ns/{ns}/executions/{id}          # full: tasks, resolved payloads, masking applied
+GET /v1/ns/{ns}/executions/{id}/status   # lightweight: no payloads resolved
+GET /v1/ns/{ns}/executions/{id}/history  # the ordered event log
+GET /v1/ns/{ns}/executions/{id}/tasks/{taskId}/logs
+GET /v1/ns/{ns}/executions/overview?hours=24
+GET /v1/ns/{ns}/executions/by-correlation/{correlationId}
+```
+
+### Searching executions
+
+```bash
+POST /v1/ns/{ns}/executions/search
+```
+
+`POST` for a read, deliberately: the filter set is a structured object, and
+encoding it into a query string means inventing an escaping scheme every client
+then has to reimplement. A body also keeps correlation ids and workflow names
+out of access logs.
+
+```json
+{
+  "status": ["FAILED", "TIMED_OUT"],
+  "defName": "checkout",
+  "defVersion": 3,
+  "correlationId": "order-A-1",
+  "idempotencyKey": "order-A-1",
+  "workflowId": "0193c0f1-…",
+  "excludeSubWorkflows": true,
+  "startedAfter": "2026-09-19T00:00:00Z",
+  "startedBefore": "2026-09-20T00:00:00Z",
+  "finished": true,
+  "limit": 50,
+  "cursor": "…",
+  "q": "status:FAILED workflow:checkout_* input.customer.tier:gold card declined"
+}
+```
+
+Pagination is **keyset**: pass the previous page's `nextCursor` as `cursor`.
+Offset paging would skip and duplicate rows, because this table receives
+continuous inserts.
+
+#### The `q` language
+
+The dashboard's search box, parsed into the same typed filters — so there is
+still no string DSL reaching SQL, nothing for a client to escape, and a UI
+search and an API call give identical results.
+
+| Term | Matches |
+|---|---|
+| `status:FAILED,TIMED_OUT` | Any of these statuses. |
+| `workflow:checkout` / `wf:check*` | A name, or a prefix ending in `*`. |
+| `version:3` | A definition version. |
+| `id:<uuid>` | One execution. |
+| `correlation:inv-7` | An exact correlation id. |
+| `key:order-42` | An exact idempotency key. |
+| `reason:"card declined"` | Text in the failure reason. |
+| `input.customer.tier:gold` | A value inside the input (JSON containment). |
+| `output.approved:true` | … or the output. Numbers, `true`, `false` and `null` are typed. |
+| `is:sub` / `is:top` | Only sub-workflows, or only top-level runs. |
+| `is:running` / `is:finished` | |
+| anything else | Free text across id, workflow, correlation id, reason, input and output. |
+
+Values with spaces go in double quotes. Every term must match. At most 20 terms;
+a mistyped key is a **400 naming the keys there are**, not an empty list that
+looks like "no such executions".
+
+Where `q` and a structured field set the same filter, **the field wins**.
+
+### Operating
+
+```bash
+POST /v1/ns/{ns}/executions/{id}/pause
+POST /v1/ns/{ns}/executions/{id}/resume
+POST /v1/ns/{ns}/executions/{id}/terminate   { "reason": "…" }
+POST /v1/ns/{ns}/executions/{id}/retry       # re-run the failed tasks, same execution
+POST /v1/ns/{ns}/executions/{id}/rerun       { "fromTaskRef": "charge" }
+POST /v1/ns/{ns}/executions/{id}/run-again   # a NEW execution with the same input
+POST /v1/ns/{ns}/executions/{id}/skip-task   { "taskRef": "charge" }
+POST /v1/ns/{ns}/executions/{id}/tasks/cancel  { "taskRef": "charge" }
+POST /v1/ns/{ns}/executions/{id}/rerun-tasks   { "taskRefs": ["charge"], "cascade": false }
+POST /v1/ns/{ns}/executions/{id}/decide      # force an evaluation
+POST /v1/ns/{ns}/executions/{id}/signal      { "taskRef": "hold", "status": "COMPLETED", "output": {...} }
+POST /v1/ns/{ns}/executions/{id}/replay      { "version": 4 }
+POST /v1/ns/{ns}/executions/{id}/messages    { "payload": {...} }
+GET  /v1/ns/{ns}/executions/{id}/messages
+
+POST /v1/ns/{ns}/executions/bulk/pause|resume|retry|terminate
+     { "workflowIds": ["…"], "reason": "incident 412" }     # up to 1000
+```
+
+`retry` resumes the **same** execution from the failed task. `run-again` starts
+a **different** one with the same input, leaving the original readable exactly
+as it was.
+
+#### Stopping one task
+
+`tasks/cancel` marks a running task `CANCELED`, releases its permits, queue
+entry and timers, and **pauses the workflow** in the same transaction. The pause
+is the point: without it the decider carries on with whatever else was runnable
+while you are still working out what went wrong.
+
+It is deliberately **not** a failure. A failure is something your definition
+handles — it spends a retry, may start the `failureWorkflow`, may unwind
+compensation — and an operator stepping in is none of those.
+
+<Callout type="warn">
+  **It does not stop your worker.** Nothing server-side can reach into the
+  process holding the lease. The lease is released, so the result is refused
+  when it eventually reports, but the work continues until it finishes on its
+  own — and whatever it touches on the way is still touched. Stopping it needs
+  the worker to cooperate, which node-flow does not do for you.
+</Callout>
+
+#### Running specific tasks again
+
+`rerun-tasks` takes the references and a `cascade` flag, **default `false`**.
+
+```jsonc
+{ "taskRefs": ["transcribe"], "cascade": false }
+```
+
+```jsonc
+// 202
+{
+  "rerun": ["transcribe"],
+  "staleDownstream": ["transcreate", "speech_generate"],
+  "cascade": false
+}
+```
+
+`cascade: true` re-runs the named tasks **and everything that depended on
+them** — by data and by control flow — so the run stays consistent. `false`
+runs only the named tasks and leaves everything else as it is, which means the
+downstream results were computed from outputs that no longer exist.
+
+That is sometimes exactly what you want, and sometimes a quiet corruption, so
+the tasks it leaves behind come back in `staleDownstream` rather than being left
+for you to notice.
+
+The dependency set is computed from the compiled blueprint, not from timing. A
+parallel branch that merely started later is **not** swept up; a task that reads
+another's output across a fork **is**, even with no control-flow edge between
+them.
+
+<Callout>
+  Both refuse on a `RUNNING` workflow — `409`, "pause it before re-running
+  tasks". Doing either live races the decider for the task frontier and a worker
+  for a row about to be deleted, and "re-run this" has no agreed meaning while
+  its downstream is still executing. **Pause it, then change it.**
+</Callout>
+
+After a re-run the execution returns to `RUNNING`, so a second one needs another
+pause.
+
+### Live stream
+
+```bash
+curl -N -H "x-api-key: $NF_API_KEY" -H 'accept: text/event-stream' \
+  "$NF_URL/v1/ns/default/executions/$ID/stream"
+```
+
+Server-sent events, closing when the execution reaches a terminal state. It is
+**resumable**: a browser's `EventSource` replays `Last-Event-ID` automatically
+after a dropped connection and the server answers from that sequence number. For
+anything that is not an `EventSource`, pass `?lastEventId=N`; the header wins
+when both are present.
+
+---
+
+## Workers
+
+Covered in full in [Workers](/docs/guide/workers).
+
+```bash
+POST /v1/ns/{ns}/queues/{queue}/lease     { "workerId","count","waitSeconds","leaseSeconds" }
+POST /v1/ns/{ns}/tasks/{taskId}/heartbeat { "queueName","leaseToken","leaseSeconds" }
+POST /v1/ns/{ns}/tasks/{taskId}/logs      { "workflowId","leaseToken","logs":[{"message","level"}] }
+POST /v1/ns/{ns}/tasks/{taskId}/report    { "queueName","workflowId","leaseToken","status","output","reason" }
+
+GET  /v1/ns/{ns}/queues                   # everything backed up
+GET  /v1/ns/{ns}/queues/workers           # who has polled in the last 24 hours
+GET  /v1/ns/{ns}/queues/{queue}/depth     # the autoscaling signal
+```
+
+---
+
+## The rest of the surface
+
+| Area | Paths |
+|---|---|
+| Namespaces | `GET/POST /v1/namespaces`, `GET /v1/namespaces/{slug}` — `platform:admin` |
+| Users | `/v1/ns/{ns}/users` — create, list, disable, login, logout, change-password |
+| Groups | `/v1/ns/{ns}/groups` — scopes, tag grants, members |
+| Permissions | `/v1/ns/{ns}/permissions` — resource grants |
+| Tags | `GET /v1/ns/{ns}/tags` — what is in use and which groups can reach it |
+| Secrets | `PUT/GET/DELETE /v1/ns/{ns}/secrets[/{name}]`, `POST .../rotate` — `admin` |
+| Environment variables | `/v1/ns/{ns}/environment` — readable, unlike secrets |
+| Schemas | `/v1/ns/{ns}/schemas`, `POST .../{name}/validate` |
+| Quotas | `GET/PUT /v1/ns/{ns}/quotas` |
+| Semaphores | `GET/PUT/DELETE /v1/ns/{ns}/semaphores[/{name}]` |
+| Schedules | `/v1/ns/{ns}/schedules`, `POST .../preview`, `/pause`, `/resume`, `/runs` |
+| Event handlers | `/v1/ns/{ns}/event-handlers`, `/sources`, `/activity`, `/executions`, `POST .../{name}/test` |
+| Inbound webhooks | `/v1/ns/{ns}/incoming-webhooks`, delivered at `/v1/hooks/{id}` |
+| Status listeners | `/v1/ns/{ns}/status-listeners` |
+| Human tasks | `/v1/ns/{ns}/human-tasks`, `/search`, and per task `/claim`, `/release`, `/reassign`, `/skip`, `/complete` |
+| Forms | `/v1/ns/{ns}/forms` |
+| Audit | `GET /v1/ns/{ns}/audit` |
+| Saved views | `/v1/ns/{ns}/saved-views` |
+| AI | `/v1/ns/{ns}/integrations`, `/prompts`, `/vector-indexes`, `/assistant` |
+| Workload identity | `/v1/ns/{ns}/workload-identities` |
+| Simulation | `/v1/ns/{ns}/metadata/…` — server-side dry runs |
+| REST gateway | `POST /v1/ns/{ns}/api/{workflow}` |
+| MCP gateway | `POST /v1/ns/{ns}/mcp` |
+
+### Schedules
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/schedules" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{
+    "name": "nightly_reconcile",
+    "cron": "0 2 * * *",
+    "timezone": "Europe/London",
+    "workflow": { "name": "reconcile", "version": 2 },
+    "input": { "mode": "full" },
+    "overlapPolicy": "SKIP",
+    "catchupPolicy": "FIRE_ONE",
+    "startAt": "2026-10-01T00:00:00Z",
+    "endAt": "2027-10-01T00:00:00Z",
+    "priority": 10
+  }'
+```
+
+| Field | Values |
+|---|---|
+| `overlapPolicy` | `ALLOW` — fire regardless; `SKIP` — do not fire while the previous run is live. |
+| `catchupPolicy` | `SKIP` — drop missed firings; `FIRE_ONE` — one catch-up; `FIRE_ALL` — every missed firing. |
+
+`POST /v1/ns/{ns}/schedules/preview` answers with the next occurrences of a cron
+expression in a timezone, without creating anything. Scopes are `workflows:*` —
+a schedule is a statement about when a definition runs, so anyone who may change
+the definition may change its schedule.
+
+### Event handlers
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/event-handlers" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{
+    "name": "on_order_placed",
+    "source": "kafka:default",
+    "topic": "orders.v1",
+    "condition": "$.value.state == \"placed\"",
+    "action": "START_WORKFLOW",
+    "workflow": { "name": "fulfil_order" },
+    "inputTemplate": { "orderId": "${value.orderId}" },
+    "correlationId": "${value.orderId}",
+    "enabled": true
+  }'
+```
+
+| Field | Meaning |
+|---|---|
+| `source` | `kafka:<name>`, `nats:<name>`, `amqp:<name>`, `sqs:<name>`, `redis:<name>`, `webhook`, or `internal`. |
+| `action` | `START_WORKFLOW`, `COMPLETE_TASK`, `FAIL_TASK`. |
+| `workflowIdExpr`, `taskRefExpr` | For the task actions: which run and which task. |
+
+A handler on a source the install has not configured is accepted and never
+fires, so read `GET /v1/ns/{ns}/event-handlers/sources` and offer those rather
+than a free-text box. `POST /v1/ns/{ns}/event-handlers/{name}/test` sends a
+synthetic message.
+
+The event monitor is `GET /v1/ns/{ns}/event-handlers/executions`, filterable by
+`handler` and `outcome` (`ACTED`, `SKIPPED`, `FAILED`).
+
+### Inbound webhooks
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/incoming-webhooks" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"name":"stripe","verifier":"STRIPE","secretName":"STRIPE_WEBHOOK_SECRET","enabled":true}'
+```
+
+The response carries the **path to publish** — use exactly that rather than
+assembling one. A webhook only verifies and forwards; what a request *does* is
+an event handler on source `webhook` with the webhook's name as the topic, so
+conditions, input templates, deduplication and the event monitor are the ones
+every other event gets.
+
+### The REST gateway
+
+`POST /v1/ns/{ns}/api/{workflow}` runs a workflow and answers with its
+**output**, nothing else. The request body is the input; query parameters are
+merged in, so a link can carry arguments.
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/api/quote" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"sku":"ABC","quantity":3}'
+# { "price": 42.00, "currency": "GBP" }
+```
+
+- **Opt-in by tag.** Only a definition carrying `api:route` is exposed. An
+  untagged workflow is a **404**, not a 403 — the gateway does not confirm that a
+  workflow exists to someone who cannot reach it.
+- **The same door, a different shape.** The caller still needs a credential with
+  `executions:start` and whatever tag or grant covers that workflow.
+- **The workflow may choose its response.** An output with a `_response` object
+  — `{ status, headers, body }` — is used as the HTTP response; anything else is
+  returned as a JSON body with 200.
+- **A slow run is a 202**, with the execution id, not an error.
+
+Browser access needs `NODE_FLOW_GATEWAY_CORS_ORIGINS`, which is empty by
+default.
+
+### The MCP gateway
+
+`POST /v1/ns/{ns}/mcp` speaks JSON-RPC (`tools/list`, `tools/call`). A
+definition tagged `mcp:tool` becomes a tool; its `description` and input schema
+become the tool's. Streamable HTTP requires both content types:
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/mcp" \
+  -H "x-api-key: $NF_API_KEY" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+---
+
+## Generated clients
+
+`clients/` in the repository holds clients generated from `openapi.json` with
+OpenAPI Generator 7.16.
+
+| Language | Directory | Package |
+|---|---|---|
+| Python | `python/` | `node_flow_client` |
+| Go | `go/` | `github.com/node-flow/node-flow-go/nodeflow` |
+| Java | `java/` | `dev.nodeflow:node-flow-client` |
+| TypeScript | `typescript/` | `@node-flow-dev/api-client` (fetch) |
+
+Operations are grouped by area (`ExecutionsApi`, `MetadataApi`, `AiApi`, …) and
+named after the server's own handlers, so
+`POST /v1/ns/{ns}/executions/{name}/execute` is `execution_execute` (Python),
+`ExecutionExecute` (Go) and `executionExecute` (Java, TypeScript).
+
+<Tabs items={['Python', 'Go']}>
+
+<Tab value="Python">
+
+```python
+import node_flow_client as nf
+
+config = nf.Configuration(host="http://localhost:3000")
+config.api_key["apiKey"] = "nf_..."
+
+with nf.ApiClient(config) as client:
+    run = nf.ExecutionsApi(client).execution_execute(
+        "default",
+        "checkout",
+        nf.ExecutionExecuteRequest(input={"orderId": "A-1"}, wait_for_seconds=10),
+    )
+    print(run["status"], run["output"])
+```
+
+</Tab>
+
+<Tab value="Go">
+
+```go
+cfg := nodeflow.NewConfiguration()
+cfg.Servers = nodeflow.ServerConfigurations{{URL: "http://localhost:3000"}}
+client := nodeflow.NewAPIClient(cfg)
+
+ctx := context.WithValue(context.Background(), nodeflow.ContextAPIKeys,
+	map[string]nodeflow.APIKey{"apiKey": {Key: os.Getenv("NF_API_KEY")}})
+
+run, _, err := client.ExecutionsAPI.ExecutionExecute(ctx, "default", "checkout").
+	ExecutionExecuteRequest(nodeflow.ExecutionExecuteRequest{
+		Input: map[string]interface{}{"orderId": "A-1"},
+	}).Execute()
+```
+
+</Tab>
+
+</Tabs>
+
+Regenerate them against a running server:
+
+```sh
+./clients/generate.sh http://localhost:3000            # all four
+./clients/generate.sh http://localhost:3000 python go  # some
+```
+
+<Callout type="info">
+  These are **the API**, not a worker SDK. Worker fleets in TypeScript should use
+  `@node-flow-dev/sdk`, which adds leasing, heartbeats, log batching, draining
+  and retries on top.
+</Callout>
+
+---
+
+## Conductor compatibility
+
+node-flow translates supported Conductor REST requests into its existing
+metadata, execution, and queue services. Existing clients can reuse that wire
+protocol after configuring the base URL and node-flow credentials, subject to
+the compatibility limits below.
+
+<Callout type="info">
+  Start with the dedicated [Conductor compatibility guide](/docs/guide/conductor)
+  for credential setup, a complete register/start/poll/report walkthrough,
+  JavaScript SDK examples, migration boundaries, and troubleshooting.
+</Callout>
+
+### Where to point an SDK
+
+Mounted at `/conductor/api`, not `/api`, because Conductor's SDKs build the path
+themselves in different ways:
+
+| SDK | Base URL |
+|---|---|
+| JavaScript (strips a trailing `/api`, appends `/api/...`) | `https://host/conductor` |
+| Python, Java (expect a base already ending in `/api`) | `https://host/conductor/api` |
+
+Keeping it under `/conductor` serves both while keeping the compatibility layer
+clearly separate from the `/v1` API this project designs against. It is a
+translation, not the contract.
+
+### What is translated
+
+```
+POST   /conductor/api/token
+POST   /conductor/api/metadata/workflow
+PUT    /conductor/api/metadata/workflow          (bulk)
+GET    /conductor/api/metadata/workflow
+GET    /conductor/api/metadata/workflow/{name}
+DELETE /conductor/api/metadata/workflow/{name}/{version}
+POST   /conductor/api/metadata/taskdefs
+PUT    /conductor/api/metadata/taskdefs
+GET    /conductor/api/metadata/taskdefs
+GET    /conductor/api/metadata/taskdefs/{name}
+
+POST   /conductor/api/workflow
+POST   /conductor/api/workflow/{name}
+POST   /conductor/api/workflow/execute/{name}[/{version}]
+GET    /conductor/api/workflow/{workflowId}
+GET    /conductor/api/workflow/{name}/correlated/{correlationId}
+GET    /conductor/api/workflow/search
+PUT    /conductor/api/workflow/{workflowId}/pause
+PUT    /conductor/api/workflow/{workflowId}/resume
+POST   /conductor/api/workflow/{workflowId}/retry
+POST   /conductor/api/workflow/{workflowId}/restart
+POST   /conductor/api/workflow/{workflowId}/rerun
+DELETE /conductor/api/workflow/{workflowId}
+
+GET    /conductor/api/tasks/poll/{taskType}?workerid=…
+GET    /conductor/api/tasks/poll/batch/{taskType}
+POST   /conductor/api/tasks
+POST   /conductor/api/tasks/{workflowId}/{taskRefName}/{status}
+GET    /conductor/api/tasks/{taskId}
+POST   /conductor/api/tasks/{taskId}/log
+GET    /conductor/api/tasks/queue/sizes
+```
+
+Requests go through the **same controllers** the `/v1` API uses, so scopes,
+resource grants, input schemas, quotas, admission control and masking apply
+unchanged. The namespace comes from the **credential**, because Conductor has no
+concept of one and its paths carry none.
+
+Conductor returns bare ids and task ids as **text**, not JSON strings, because
+its SDKs read them directly. That is preserved.
+
+### Two differences, documented rather than papered over
+
+<Callout type="warn">
+  **Fencing is weaker.** A Conductor `TaskResult` carries no lease token —
+  Conductor has no equivalent — so the token is read from the task row and the
+  worker is checked by `workerId` instead. A worker that kept its id and lost
+  its lease to a timeout could still report. Workers on the `/v1` API keep the
+  stronger guarantee.
+
+  **Search is partial.** Conductor's query language is an Elasticsearch dialect.
+  The common equality forms are translated; anything else is **ignored** rather
+  than silently mistranslated into a different result set.
+</Callout>
+
+### Migrating
+
+```bash
+# 1. Point the SDK at the compatibility layer, exchange credentials as usual.
+curl -X POST https://flows.example.com/conductor/api/token \
+  -H 'content-type: application/json' \
+  -d '{"keyId":"…","keySecret":"…"}'
+
+# 2. Register definitions after checking the supported task/expression subset.
+curl -X POST https://flows.example.com/conductor/api/metadata/workflow \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  --data @existing-conductor-workflow.json
+
+# 3. Workers keep polling and acking the Conductor way.
+curl "https://flows.example.com/conductor/api/tasks/poll/charge?workerid=w1" \
+  -H "authorization: Bearer $TOKEN"
+```
+
+Things worth knowing when porting definitions:
+
+- `http_request` nesting on `HTTP` tasks is accepted.
+- `value-param` SWITCH expressions work; **`javascript` ones are refused at
+  registration** rather than silently taking the default case.
+- Conductor-style loop conditions (`$.loop['iteration'] < 3`) are **refused at
+  registration** rather than silently running the loop once.
+- `${workflow.variables.x}` and `${workflow.env.X}` both resolve.
+- Duration strings (`"10m 30s"`, `"1 day 4 hours"`) parse the same way.
+
+## Next
+
+- [Workers](/docs/guide/workers) — the worker half of this API.
+- [Configuration](/docs/guide/configuration) — the variables behind SSO, brokers and CORS.
+- [Self-hosting](/docs/guide/self-hosting) — health, metrics and roles.

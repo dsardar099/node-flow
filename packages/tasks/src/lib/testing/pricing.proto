@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package pricing.v1;
+
+// A fixture service, small enough to read and broad enough to cover the cases
+// that matter: a normal call, a nested message, and every failure a real
+// service produces.
+service Pricing {
+  rpc GetQuote (QuoteRequest) returns (QuoteResponse);
+  rpc Fail (FailRequest) returns (QuoteResponse);
+  rpc Slow (QuoteRequest) returns (QuoteResponse);
+  rpc Big (QuoteRequest) returns (BigResponse);
+}
+
+message QuoteRequest {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message QuoteResponse {
+  string sku = 1;
+  double total = 2;
+  Currency currency = 3;
+}
+
+message Currency {
+  string code = 1;
+}
+
+message FailRequest {
+  int32 code = 1;
+  string message = 2;
+}
+
+message BigResponse {
+  repeated string blob = 1;
+}

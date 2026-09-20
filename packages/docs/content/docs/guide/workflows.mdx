@@ -1,0 +1,1193 @@
+---
+title: Authoring workflows
+description: The JSON DSL in full — every field, every operator, and a worked example of each.
+---
+
+A workflow definition is a JSON document. This page is the reference for every
+field it may carry, and for each control-flow operator: what it does, what it
+requires, what it outputs, and a complete example you can register as-is.
+
+Everything here is checked against the zod schemas in `@node-flow-dev/core` and
+the blueprint compiler in `@node-flow-dev/engine`. Where the compiler rejects
+something at registration, that is called out — those are the errors you want,
+because the alternative is a workflow that runs and quietly does the wrong
+thing.
+
+## The definition
+
+```json
+{
+  "name": "fulfil_order",
+  "version": 1,
+  "description": "Charges, ships, and unwinds itself if shipping fails.",
+  "ownerEmail": "payments@example.com",
+  "tags": ["team:payments"],
+
+  "inputParameters": ["orderId", "amount"],
+  "inputSchema": { "$ref": "order_input" },
+  "variables": { "stage": "new" },
+
+  "tasks": [ /* ... */ ],
+
+  "outputParameters": { "receipt": "${charge.output.txnId}" },
+  "outputSchema": { "$ref": "order_output" },
+
+  "failureWorkflow": "order_failed",
+  "failureWorkflowVersion": 2,
+
+  "restartable": true,
+  "timeoutSeconds": 3600,
+  "timeoutPolicy": "TIME_OUT_WF",
+
+  "maxConcurrentExecutions": 0,
+  "maxConcurrentTasks": 50,
+  "rateLimitConfig": { "rateLimitKey": "${workflow.input.customerId}", "concurrentExecLimit": 1 },
+
+  "maskedFields": ["cardNumber", "cvv"]
+}
+```
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | string | — | Required. `^[a-zA-Z_][a-zA-Z0-9_.-]*$`, ≤255 chars. |
+| `version` | int ≥ 1 | `1` | Immutable once registered. |
+| `description` | string | — | ≤4000 chars. |
+| `tasks` | task[] | — | Required, at least one. |
+| `inputParameters` | string[] | — | Documentation of expected input keys. Not enforced — use `inputSchema` for that. |
+| `outputParameters` | object | — | The run's output, as expressions. Resolved key by key when it completes. |
+| `variables` | object | — | Initial workflow variables, mutable at runtime by `SET_VARIABLE`. |
+| `inputSchema` | JSON or a registered schema name | — | The run's input is validated against it **at start**; a mismatch is a 400 naming the field. |
+| `outputSchema` | JSON or a registered schema name | — | Accepted and stored. Not currently enforced at completion. |
+| `failureWorkflow` | string | — | Started when this run ends `FAILED` or `TIMED_OUT`. |
+| `failureWorkflowVersion` | int ≥ 1 | latest | Pins the handler's version. |
+| `restartable` | boolean | `true` | Accepted and stored; not currently consulted by the operator actions. |
+| `timeoutSeconds` | number ≥ 0 | `0` | Whole-run budget. `0` disables. When it fires the run ends `TIMED_OUT` and its failure workflow starts. |
+| `timeoutPolicy` | enum | `TIME_OUT_WF` | Accepted and stored. The *task definition's* `timeoutPolicy` is what the decider consults; a whole-run timeout always ends the run. |
+| `maxConcurrentExecutions` | int ≥ 0 | `0` | Cap on live executions of this definition. `0` disables. |
+| `maxConcurrentTasks` | int ≥ 0 | `0` | Cap on in-flight tasks *within one run*. Bounds fan-out. `0` disables. |
+| `rateLimitConfig` | object | — | Per-key admission: `{ rateLimitKey, concurrentExecLimit }`. Queued, not refused. |
+| `maskedFields` | string[] | — | Key names shown as `***` wherever the execution is read. ≤100 entries. |
+| `ownerEmail` | email | — | Contact, shown in the dashboard. |
+| `tags` | string[] | `[]` | `key:value`. Drives tag-based access, and the `api:route` / `mcp:tool` gateways. |
+
+### The task
+
+```json
+{
+  "name": "charge_card",
+  "taskReferenceName": "charge",
+  "type": "SIMPLE",
+  "description": "Takes the money.",
+  "inputParameters": { "amount": "${workflow.input.amount}" },
+  "optional": false,
+  "startDelaySeconds": 0,
+  "retryCount": 3,
+  "domain": "eu-west",
+  "cacheConfig": { "key": "${workflow.input.orderId}", "ttlInSecond": 300 },
+  "compensateWith": "refund_card"
+}
+```
+
+| Field | Applies to | Meaning |
+|---|---|---|
+| `name` | all | The task definition name. For `SIMPLE`, the queue workers poll. |
+| `taskReferenceName` | all | Unique identity in this workflow. What `${...}` refers to. |
+| `type` | all | One of the task types. |
+| `inputParameters` | all | Arbitrary JSON with `${...}` expressions at any depth. |
+| `optional` | all | A failure is absorbed: the task ends `COMPLETED_WITH_ERRORS` and the workflow carries on. |
+| `startDelaySeconds` | all | Delay before the task becomes visible. |
+| `retryCount` | all | Overrides only the *count* from the task definition. |
+| `domain` | worker tasks | Routes to `name:domain`. |
+| `cacheConfig` | non-operators | Reuse a previous successful output for the same resolved key. `ttlInSecond` 1–31,536,000. A key resolving to empty caches nothing. |
+| `compensateWith` | non-operators | Saga undo: a task definition name, or a whole task. |
+| `asyncComplete` | — | Accepted for Conductor compatibility; currently inert. A task completed from outside is expressed with `YIELD`, `WAIT` without timing, or `WAIT_FOR_WEBHOOK`. |
+| `evaluatorType`, `expression`, `decisionCases`, `defaultCase` | `SWITCH` | |
+| `forkTasks` | `FORK_JOIN` | |
+| `dynamicForkTasksParam`, `dynamicForkTasksInputParamName` | `FORK_JOIN_DYNAMIC` | |
+| `joinOn` | `JOIN`, `EXCLUSIVE_JOIN` | |
+| `loopCondition`, `loopOver` | `DO_WHILE` | |
+| `dynamicTaskNameParam` | `DYNAMIC` | |
+| `subWorkflowParam` | `SUB_WORKFLOW`, `START_WORKFLOW` | |
+
+<Callout type="warn">
+  Retry **policy** other than `retryCount` — `retryLogic`, `retryDelaySeconds`,
+  `jitter`, `retryBudget`, `nonRetryableErrors` — and every timeout and
+  concurrency setting live on the **task definition**, not on the task inside a
+  workflow. Those keys on a workflow task are stripped by the schema without
+  complaint. See [Execution controls](/docs/guide/execution-controls).
+</Callout>
+
+## Sequence: the default
+
+Tasks in a list run one after another. There is no explicit edge syntax; the
+list *is* the edges.
+
+```json
+{
+  "name": "onboard",
+  "version": 1,
+  "tasks": [
+    { "name": "create_account", "taskReferenceName": "create", "type": "SIMPLE" },
+    {
+      "name": "send_welcome",
+      "taskReferenceName": "welcome",
+      "type": "SIMPLE",
+      "inputParameters": { "accountId": "${create.output.id}" }
+    }
+  ]
+}
+```
+
+---
+
+## SWITCH
+
+Branches on a value. The matching case runs; every other case head is marked
+`SKIPPED` so nothing downstream waits on it.
+
+<Mermaid
+  title="SWITCH with two cases and a default"
+  chart={`
+flowchart TD
+  IN[review completed] --> SW{on_decision<br/>SWITCH}
+  SW -->|approved| PAY[pay]
+  SW -->|escalated| ESC[escalate]
+  SW -->|default| REJ[notify_rejection]
+  PAY --> AFTER[audit]
+  ESC --> AFTER
+  REJ --> AFTER
+`}
+/>
+
+**Required:** `expression` or `inputParameters`, plus `decisionCases` and/or
+`defaultCase`.
+
+**Output:** `{ "caseValue": "approved" }` — always a string, or `null`.
+
+### The two spellings of `expression`
+
+| `evaluatorType` | `expression` is | Example |
+|---|---|---|
+| `value-param` (default) | the **name of an input parameter** | `"switchCaseValue"` beside `inputParameters: { "switchCaseValue": "${review.output.decision}" }` |
+| `jsonpath` | a `${...}` expression | `"${review.output.decision}"` |
+| `javascript` | **rejected at registration** | — |
+
+Both forms are accepted whatever `evaluatorType` says: an `expression`
+containing `${` is resolved as an expression, and one that does not is looked up
+as an input-parameter name. The distinction exists because almost every
+Conductor definition uses `value-param`.
+
+<Callout type="warn">
+  A `value-param` expression that names **no** input parameter is rejected at
+  registration: as written it would be compared as literal text, so every run
+  would take the default case with nothing reporting a problem.
+</Callout>
+
+### Worked example
+
+```json
+{
+  "name": "approval",
+  "version": 1,
+  "inputParameters": ["reviewer", "amount"],
+  "tasks": [
+    {
+      "name": "review",
+      "taskReferenceName": "review",
+      "type": "HUMAN",
+      "inputParameters": {
+        "title": "Approve payment of ${workflow.input.amount}",
+        "assignments": [{ "user": "${workflow.input.reviewer}", "slaMinutes": 120 }]
+      }
+    },
+    {
+      "name": "on_decision",
+      "taskReferenceName": "on_decision",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "decision",
+      "inputParameters": { "decision": "${review.output.decision}" },
+      "decisionCases": {
+        "approved": [
+          {
+            "name": "pay",
+            "taskReferenceName": "pay",
+            "type": "SIMPLE",
+            "inputParameters": { "amount": "${workflow.input.amount}" }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "notify_rejection",
+          "taskReferenceName": "notify_rejection",
+          "type": "SIMPLE",
+          "inputParameters": { "reason": "${review.output.comment}" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Every case rejoins the flow at whatever follows the `SWITCH`. If no case matches
+and there is no `defaultCase`, the run continues past the switch rather than
+stalling.
+
+---
+
+## FORK_JOIN and JOIN
+
+Runs branches in parallel and waits for all of them.
+
+<Mermaid
+  title="FORK_JOIN over two branches"
+  chart={`
+flowchart LR
+  START[start] --> FORK[enrich<br/>FORK_JOIN]
+  FORK --> A1[credit_score]
+  FORK --> B1[order_history]
+  A1 --> JOIN[wait_for_both<br/>JOIN]
+  B1 --> JOIN
+  JOIN --> DEC[decide]
+`}
+/>
+
+**Required:** `forkTasks`, a non-empty array of non-empty branches, **and a
+`JOIN` or `EXCLUSIVE_JOIN` immediately after it in the same sequence**. The
+compiler refuses anything else:
+
+```
+FORK_JOIN "enrich" must be followed immediately by a JOIN or EXCLUSIVE_JOIN task
+```
+
+**`JOIN`'s `joinOn`** lists the references to wait on. Omit it and the join
+waits on each branch's **last** task — the tip, not the head. That distinction
+only becomes visible once a branch has more than one task, and getting it wrong
+would fire the join as soon as every branch had *started*.
+
+**Outputs:**
+
+- `FORK_JOIN` → `{ "forkedBranches": ["credit_score", "order_history"] }`
+- `JOIN` → one key per joined reference, holding that task's whole output:
+  `{ "credit_score": { "score": 720 }, "order_history": { "orders": [] } }`
+
+So `${wait_for_both.output.credit_score.score}` works, and so does the direct
+`${credit_score.output.score}`.
+
+### Worked example
+
+```json
+{
+  "name": "parallel_enrichment",
+  "version": 1,
+  "inputParameters": ["customerId"],
+  "tasks": [
+    {
+      "name": "enrich",
+      "taskReferenceName": "enrich",
+      "type": "FORK_JOIN",
+      "forkTasks": [
+        [
+          {
+            "name": "credit_score",
+            "taskReferenceName": "credit_score",
+            "type": "SIMPLE",
+            "inputParameters": { "customerId": "${workflow.input.customerId}" }
+          }
+        ],
+        [
+          {
+            "name": "order_history",
+            "taskReferenceName": "order_history",
+            "type": "SIMPLE",
+            "inputParameters": { "customerId": "${workflow.input.customerId}" }
+          }
+        ]
+      ]
+    },
+    {
+      "name": "wait_for_both",
+      "taskReferenceName": "wait_for_both",
+      "type": "JOIN",
+      "joinOn": ["credit_score", "order_history"]
+    },
+    {
+      "name": "decide",
+      "taskReferenceName": "decide",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "score": "${credit_score.output.score}",
+        "orders": "${order_history.output.orders}"
+      }
+    }
+  ]
+}
+```
+
+Branches may contain anything, including nested forks and switches. A nested
+fork's branch tip is its own inner `JOIN`, which is exactly the node whose
+completion means the branch is finished.
+
+<Callout type="info">
+  Use `maxConcurrentTasks` on the definition to bound how many branch tasks may
+  be in flight at once. Operators are exempt from the cap — blocking them would
+  stall the control flow that decides what runs next.
+</Callout>
+
+---
+
+## EXCLUSIVE_JOIN
+
+Merges branches of which **exactly one** ran. Its natural partner is `SWITCH`,
+where the untaken branches are `SKIPPED` and would never satisfy a plain `JOIN`.
+
+<Mermaid
+  title="SWITCH followed by EXCLUSIVE_JOIN"
+  chart={`
+flowchart LR
+  PICK{pick<br/>SWITCH} -->|left| L[left]
+  PICK -->|default| R[right]
+  L --> MERGE[merge<br/>EXCLUSIVE_JOIN]
+  R --> MERGE
+  MERGE --> NEXT[continue]
+`}
+/>
+
+**Required:** `joinOn` naming the branch references.
+
+**Output:** the taken branch's output **directly**, not keyed by branch — so
+`${merge.output.side}` reads the field the branch that actually ran produced.
+Keying it would force the caller to know which branch ran, which defeats the
+operator.
+
+It completes as soon as one of its `joinOn` references is `COMPLETED`; branches
+that were `SKIPPED` are ignored.
+
+```json
+{
+  "name": "route_and_merge",
+  "version": 1,
+  "inputParameters": ["route"],
+  "tasks": [
+    {
+      "name": "pick",
+      "taskReferenceName": "pick",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "switchCaseValue",
+      "inputParameters": { "switchCaseValue": "${workflow.input.route}" },
+      "decisionCases": {
+        "left": [
+          {
+            "name": "left",
+            "taskReferenceName": "left",
+            "type": "INLINE",
+            "inputParameters": { "expression": "return { side: 'left' };" }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "right",
+          "taskReferenceName": "right",
+          "type": "INLINE",
+          "inputParameters": { "expression": "return { side: 'right' };" }
+        }
+      ]
+    },
+    {
+      "name": "merge",
+      "taskReferenceName": "merge",
+      "type": "EXCLUSIVE_JOIN",
+      "joinOn": ["left", "right"]
+    }
+  ],
+  "outputParameters": { "side": "${merge.output.side}" }
+}
+```
+
+---
+
+## FORK_JOIN_DYNAMIC
+
+Fans out over a list computed at runtime. The branches do not exist in the
+definition — their count and names come from a previous task's output — so they
+are materialised during evaluation.
+
+<Mermaid
+  title="Dynamic fan-out over a runtime list"
+  chart={`
+flowchart LR
+  PLAN[plan<br/>produces tasks + inputs] --> FAN[fan<br/>FORK_JOIN_DYNAMIC]
+  FAN --> I0[item_0]
+  FAN --> I1[item_1]
+  FAN --> IN["item_n ..."]
+  I0 --> J[join<br/>JOIN]
+  I1 --> J
+  IN --> J
+  J --> AFTER[summarise]
+`}
+/>
+
+| Field | Default | Holds |
+|---|---|---|
+| `dynamicForkTasksParam` | `dynamicTasks` | The name of the input parameter holding the **task list**. |
+| `dynamicForkTasksInputParamName` | `dynamicTasksInput` | The name of the input parameter holding a **map of reference name to that task's input**. |
+
+Each entry of the task list is an object with at least `name` and
+`taskReferenceName`; `type` defaults to `SIMPLE`, and `domain` defaults to the
+fork's own domain so a routed fork does not scatter its branches across the
+shared pool. Entries missing a name or a reference name are skipped.
+
+**Output:** `{ "forkedTaskRefs": ["item_0", "item_1", "item_2"] }`. That is the
+only place the downstream `JOIN` can learn what to wait for, so a `JOIN` after a
+dynamic fork normally has **no** `joinOn` — it reads the refs from the fork's
+output.
+
+An empty or absent list is legitimate: the join is satisfied immediately rather
+than waiting for nothing.
+
+### Worked example
+
+```json
+{
+  "name": "process_documents",
+  "version": 1,
+  "inputParameters": ["names"],
+  "tasks": [
+    {
+      "name": "plan",
+      "taskReferenceName": "plan",
+      "type": "INLINE",
+      "inputParameters": {
+        "names": "${workflow.input.names}",
+        "expression": "return { tasks: $.names.map((n, i) => ({ name: 'handle_document', taskReferenceName: 'item_' + i, type: 'SIMPLE' })), inputs: Object.fromEntries($.names.map((n, i) => ['item_' + i, { document: n }])) };"
+      }
+    },
+    {
+      "name": "fan",
+      "taskReferenceName": "fan",
+      "type": "FORK_JOIN_DYNAMIC",
+      "dynamicForkTasksParam": "dynamicTasks",
+      "dynamicForkTasksInputParamName": "dynamicTasksInput",
+      "inputParameters": {
+        "dynamicTasks": "${plan.output.tasks}",
+        "dynamicTasksInput": "${plan.output.inputs}"
+      }
+    },
+    { "name": "join", "taskReferenceName": "join", "type": "JOIN" }
+  ]
+}
+```
+
+<Callout type="warn">
+  Nothing static-analysed these branches, so a malformed entry is a runtime
+  problem rather than a registration error — and a dynamically forked task that
+  **fails** fails the workflow, because there is no declared node carrying an
+  `optional` flag to consult.
+</Callout>
+
+---
+
+## DO_WHILE
+
+Repeats a body. The `DO_WHILE` task stays open for the whole loop and completes
+when the condition stops holding.
+
+<Mermaid
+  title="DO_WHILE"
+  chart={`
+flowchart TD
+  ENTER[enter loop] --> BODY[loopOver body<br/>iteration 1, 2, 3 ...]
+  BODY --> COND{loopCondition}
+  COND -->|true| BODY
+  COND -->|false| DONE[DO_WHILE completes<br/>output.iteration = last pass]
+  DONE --> AFTER[next task]
+`}
+/>
+
+**Required:** a non-empty `loopOver`, and a `loopCondition`.
+
+**Output on completion:** `{ "iteration": 3 }` — the number of passes that ran.
+
+### The condition grammar
+
+The pure engine does not execute scripts, so conditions are a small, explicit
+grammar:
+
+```
+true
+false
+<operand> <op> <operand>      where op is one of  <  <=  >  >=  ==  ===  !=  !==
+```
+
+An operand may be:
+
+- a number literal (`3`, `1.5`);
+- `${anyRef.output.iteration}`, which resolves to the **current pass number**;
+- any `${...}` expression, resolved and coerced to a number when it looks like
+  one, otherwise compared as a string with surrounding quotes stripped;
+- a bare word, treated as a string literal — so
+  `${charge.output.status} == PAID` works as written.
+
+An operand that cannot be resolved **exits the loop** rather than spinning
+forever. That is the safe direction to fail.
+
+<Callout type="warn">
+  Registration refuses two condition shapes, because both silently run the loop
+  exactly once:
+
+  - **no comparison at all** — `${check.output.done}` on its own;
+  - **an operand in another syntax** — `$.loop['iteration'] < 3`, which is how
+    Conductor's JavaScript conditions look and therefore what people migrating
+    paste. Written that way it is compared as literal text, which is never less
+    than 3.
+</Callout>
+
+### Iteration counting
+
+`${loopRef.output.iteration}` is the number of passes **completed**, so
+`${each_item.output.iteration} < 3` runs the body three times: after passes 1
+and 2 the condition holds, after pass 3 it does not. Inside the body the same
+reference reads as the iteration currently running.
+
+Every task in the body gets its own row per pass, distinguished by `iteration`,
+so an execution shows `handle_item`, `handle_item#1`, `handle_item#2` and so on.
+
+### Worked example
+
+```json
+{
+  "name": "process_batch",
+  "version": 1,
+  "inputParameters": ["itemCount"],
+  "tasks": [
+    {
+      "name": "each_item",
+      "taskReferenceName": "each_item",
+      "type": "DO_WHILE",
+      "loopCondition": "${each_item.output.iteration} < ${workflow.input.itemCount}",
+      "loopOver": [
+        {
+          "name": "handle_item",
+          "taskReferenceName": "handle_item",
+          "type": "SIMPLE",
+          "inputParameters": { "index": "${each_item.output.iteration}" }
+        }
+      ]
+    }
+  ],
+  "outputParameters": { "processed": "${each_item.output.iteration}" }
+}
+```
+
+A loop driven by data rather than a count reads a flag the body produces:
+
+```json
+{
+  "name": "drain_pages",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "pages",
+      "taskReferenceName": "pages",
+      "type": "DO_WHILE",
+      "loopCondition": "${fetch_page.output.hasMore} == true",
+      "loopOver": [
+        {
+          "name": "fetch_page",
+          "taskReferenceName": "fetch_page",
+          "type": "SIMPLE",
+          "inputParameters": { "page": "${pages.output.iteration}" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Only the current iteration's tasks are ever loaded, so a loop that has run
+10,000 times costs exactly as much to evaluate as one that has run once.
+
+---
+
+## DYNAMIC
+
+Chooses which task definition to run at runtime — Conductor's function pointer.
+
+**Field:** `dynamicTaskNameParam`, defaulting to `taskToExecute`. The named
+input parameter's **value** is the task definition name that will actually be
+dispatched. The task runs as a `SIMPLE` task on that queue.
+
+If the parameter is missing or is not a string, the node's own `name` stands and
+the failure surfaces as an unknown task rather than as a silent no-op.
+
+```json
+{
+  "name": "route_by_country",
+  "version": 1,
+  "inputParameters": ["country", "payload"],
+  "tasks": [
+    {
+      "name": "handler",
+      "taskReferenceName": "handler",
+      "type": "DYNAMIC",
+      "dynamicTaskNameParam": "taskToExecute",
+      "inputParameters": {
+        "taskToExecute": "handle_${workflow.input.country}",
+        "payload": "${workflow.input.payload}"
+      }
+    }
+  ],
+  "outputParameters": { "result": "${handler.output.result}" }
+}
+```
+
+With `country: "uk"` that leases from the queue `handle_uk`.
+
+---
+
+## SUB_WORKFLOW
+
+Runs another workflow as a child and **waits** for it. The parent task sits
+`IN_PROGRESS` for the child's whole lifetime, costing no worker and no lease.
+
+<Mermaid
+  title="SUB_WORKFLOW"
+  chart={`
+sequenceDiagram
+  participant P as Parent run
+  participant E as Engine
+  participant C as Child run
+  P->>E: SUB_WORKFLOW task scheduled
+  E->>C: start child, same transaction
+  Note over P: parent task IN_PROGRESS
+  C->>C: runs its own tasks
+  C-->>E: child reaches a terminal status
+  E-->>P: parent task completes with the child's output
+  Note over P,C: a failed child fails the parent task,<br/>which then retries per policy
+`}
+/>
+
+**Required:** `subWorkflowParam.name`. The compiler refuses a `SUB_WORKFLOW`
+without it, because it would start no child and so never be completed by one —
+the run would hang with no error anywhere.
+
+| Field | Meaning |
+|---|---|
+| `subWorkflowParam.name` | The child definition. |
+| `subWorkflowParam.version` | Pins a version. Omitted means the latest at start. |
+| `subWorkflowParam.taskToDomain` | Routes the child's worker tasks, so it lands on the same fleet as the parent. |
+
+The child's **output** becomes the task's output, so
+`${child.output.doubled}` reads the child's `outputParameters`.
+
+A failed child fails the parent task, which then obeys the parent task's retry
+policy — and **a retry starts a genuinely new child**, with a fresh idempotency
+key that includes the attempt.
+
+```json
+{
+  "name": "order_with_fulfilment",
+  "version": 1,
+  "inputParameters": ["orderId"],
+  "tasks": [
+    {
+      "name": "fulfil",
+      "taskReferenceName": "fulfil",
+      "type": "SUB_WORKFLOW",
+      "retryCount": 1,
+      "subWorkflowParam": {
+        "name": "fulfilment",
+        "version": 3,
+        "taskToDomain": { "*": "eu-west" }
+      },
+      "inputParameters": { "orderId": "${workflow.input.orderId}" }
+    }
+  ],
+  "outputParameters": { "trackingId": "${fulfil.output.trackingId}" }
+}
+```
+
+---
+
+## START_WORKFLOW
+
+Starts another workflow and **does not wait**. The task is done the moment the
+start is issued, and the child's fate cannot affect this run.
+
+**Required:** `subWorkflowParam.name` — same compiler check, for the same
+reason: without it the task would report success having started nothing.
+
+**Output:** `{ "started": "notify_customer" }`.
+
+The child's input is this task's resolved `inputParameters`, and the start is
+keyed on `workflowId:refName:iteration` so a replayed evaluation cannot start it
+twice.
+
+```json
+{
+  "name": "order_placed",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "kick_off_analytics",
+      "taskReferenceName": "kick_off_analytics",
+      "type": "START_WORKFLOW",
+      "subWorkflowParam": { "name": "record_order_metrics" },
+      "inputParameters": { "orderId": "${workflow.input.orderId}" }
+    }
+  ]
+}
+```
+
+| | `SUB_WORKFLOW` | `START_WORKFLOW` |
+|---|---|---|
+| Waits for the child | yes | no |
+| Child failure fails the parent | yes | no |
+| Child output available | yes | no |
+| Parent task status while child runs | `IN_PROGRESS` | already `COMPLETED` |
+
+---
+
+## TERMINATE
+
+Ends the run immediately, with a status you choose.
+
+| Input parameter | Meaning |
+|---|---|
+| `terminationStatus` | `COMPLETED`, `FAILED` or `TERMINATED`. Defaults to `COMPLETED`. |
+| `terminationReason` | Recorded as `reasonForIncompletion` for the non-completed statuses. |
+| `workflowOutput` | Used as the run's output, for `COMPLETED`. Must be an object. |
+
+Anything after a `TERMINATE` on the taken path never runs.
+
+```json
+{
+  "name": "screen_application",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "check",
+      "taskReferenceName": "check",
+      "type": "SIMPLE"
+    },
+    {
+      "name": "gate",
+      "taskReferenceName": "gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "eligible",
+      "inputParameters": { "eligible": "${check.output.eligible}" },
+      "decisionCases": {
+        "false": [
+          {
+            "name": "stop",
+            "taskReferenceName": "stop",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": { "decision": "not eligible" }
+            }
+          }
+        ]
+      }
+    },
+    { "name": "underwrite", "taskReferenceName": "underwrite", "type": "SIMPLE" }
+  ]
+}
+```
+
+<Callout type="info">
+  `TERMINATE` with `TERMINATED` does **not** trigger the failure workflow and
+  does **not** start compensation. A terminated run was stopped on purpose, and
+  undoing its work is a decision for whoever stopped it. `FAILED` does both.
+</Callout>
+
+---
+
+## SET_VARIABLE
+
+Writes workflow-scoped variables. Every input parameter becomes a variable of
+that name.
+
+**Output:** the same object it was given.
+
+The write is visible **immediately**, including to the very next task in the
+same evaluation pass — setting a variable and using it in the next step is the
+whole idiom, and it would be useless if the value only appeared a pass later.
+
+```json
+{
+  "name": "staged",
+  "version": 1,
+  "variables": { "stage": "new" },
+  "tasks": [
+    {
+      "name": "mark_shipped",
+      "taskReferenceName": "mark_shipped",
+      "type": "SET_VARIABLE",
+      "inputParameters": { "stage": "shipped", "shippedAt": "${workflow.input.now}" }
+    },
+    {
+      "name": "read",
+      "taskReferenceName": "read",
+      "type": "INLINE",
+      "inputParameters": {
+        "expression": "return { seen: $.v };",
+        "v": "${workflow.variables.stage}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "viaTask": "${read.output.seen}",
+    "direct": "${global.stage}"
+  }
+}
+```
+
+Both `${global.stage}` and `${workflow.variables.stage}` read the same value.
+
+---
+
+## GET_WORKFLOW
+
+Reports the run's own metadata. Useful for correlating, logging, or building a
+link back to the execution.
+
+**Output:**
+
+```json
+{
+  "workflowId": "0193c0f1-...",
+  "defName": "fulfil_order",
+  "defVersion": 2,
+  "status": "RUNNING",
+  "correlationId": "order-12345"
+}
+```
+
+```json
+{
+  "name": "self_aware",
+  "version": 1,
+  "tasks": [{ "name": "meta", "taskReferenceName": "meta", "type": "GET_WORKFLOW" }],
+  "outputParameters": {
+    "runId": "${meta.output.workflowId}",
+    "correlation": "${meta.output.correlationId}"
+  }
+}
+```
+
+---
+
+## YIELD
+
+Pauses until something signals it. Unlike `WAIT`, nothing ends it on a schedule
+— it waits to be told.
+
+**Output:** whatever the signal supplied.
+
+```json
+{
+  "name": "external_gate",
+  "version": 1,
+  "tasks": [
+    { "name": "hold", "taskReferenceName": "hold", "type": "YIELD" },
+    {
+      "name": "after",
+      "taskReferenceName": "after",
+      "type": "INLINE",
+      "inputParameters": { "expression": "return { resumed: $.v };", "v": "${hold.output.approved}" }
+    }
+  ],
+  "outputParameters": { "resumed": "${after.output.resumed}" }
+}
+```
+
+Resume it:
+
+```bash
+curl -X POST "$NF_URL/v1/ns/default/executions/$WF_ID/signal" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  -d '{"taskRef":"hold","status":"COMPLETED","output":{"approved":true}}'
+```
+
+`taskRef` is optional: without it the signal targets the first blocked `WAIT` or
+`YIELD`, **searching running sub-workflows too**. Add `waitForSeconds` to have
+the call answer with the state the signal got the run to.
+
+---
+
+## NOOP
+
+Completes immediately with an empty output. Useful as a join point, a
+placeholder while a workflow is being built, and a deliberate marker in a
+diagram.
+
+```json
+{ "name": "gap", "taskReferenceName": "gap", "type": "NOOP" }
+```
+
+---
+
+## Compensation (saga)
+
+`compensateWith` declares how to undo a task. When the run later fails, every
+**completed** task that declares one is compensated, most recently finished
+first, before the run ends as failed.
+
+<Mermaid
+  title="An unwind"
+  chart={`
+sequenceDiagram
+  participant R as Run
+  participant H as book_hotel
+  participant F as book_flight
+  participant C as cancel_hotel
+  R->>H: run
+  H-->>R: COMPLETED (bookingId b-1)
+  R->>F: run
+  F-->>R: FAILED_WITH_TERMINAL_ERROR
+  Note over R: set __compensation = {status, reason}<br/>cancel everything still scheduled
+  R->>C: run compensation for book_hotel
+  C-->>R: COMPLETED
+  Note over R: workflow ends FAILED<br/>"card declined (compensated: book_hotel)"
+`}
+/>
+
+### Two forms
+
+**A name** — shorthand for "run this task definition as a `SIMPLE` task". The
+generated task has reference name `{ref}__compensate` and receives:
+
+```json
+{ "input": "${book_hotel.input}", "output": "${book_hotel.output}" }
+```
+
+which is what an undo worker almost always needs: enough to know what to reverse.
+
+**A whole task** — when the compensation needs a different shape:
+
+```json
+{
+  "name": "book_hotel",
+  "taskReferenceName": "book_hotel",
+  "type": "SIMPLE",
+  "inputParameters": { "city": "${workflow.input.city}" },
+  "compensateWith": {
+    "name": "cancel_hotel",
+    "taskReferenceName": "cancel_hotel",
+    "type": "SIMPLE",
+    "inputParameters": { "bookingId": "${book_hotel.output.bookingId}" }
+  }
+}
+```
+
+### Rules
+
+| Rule | Why |
+|---|---|
+| Compensations run in **reverse completion order**, one at a time. | A later step may depend on an earlier one — the shipment on the charge — so it is undone before what it built on. |
+| Only `FAILED` and `TIMED_OUT` trigger an unwind. | A `TERMINATED` run was stopped deliberately. |
+| A compensation may not be an operator. | It has to do work. Registration refuses it. |
+| A compensation may not itself declare `compensateWith`. | Registration refuses it. |
+| A compensation's reference name must be unique. | Registration refuses a collision, naming it. |
+| A failed compensation gets its own retries; once spent, the run fails with **both** reasons. | An unwind that stopped halfway is exactly what someone has to go and finish by hand. |
+| The unwind cancels whatever the failing pass meant to start. | That work belongs to a run that is no longer going forward. |
+
+A run that is unwinding carries a `__compensation` workflow variable holding
+`{ status, reason }`, so an operator can see from the execution view that a run
+is unwinding and why.
+
+### Worked example
+
+```json
+{
+  "name": "book_trip",
+  "version": 1,
+  "inputParameters": ["city"],
+  "tasks": [
+    {
+      "name": "book_hotel",
+      "taskReferenceName": "book_hotel",
+      "type": "SIMPLE",
+      "inputParameters": { "city": "${workflow.input.city}" },
+      "compensateWith": {
+        "name": "cancel_hotel",
+        "taskReferenceName": "cancel_hotel",
+        "type": "SIMPLE",
+        "inputParameters": { "bookingId": "${book_hotel.output.bookingId}" }
+      }
+    },
+    {
+      "name": "book_flight",
+      "taskReferenceName": "book_flight",
+      "type": "SIMPLE",
+      "inputParameters": { "city": "${workflow.input.city}" },
+      "retryCount": 2,
+      "compensateWith": "cancel_flight"
+    },
+    {
+      "name": "charge",
+      "taskReferenceName": "charge",
+      "type": "SIMPLE",
+      "inputParameters": { "city": "${workflow.input.city}" }
+    }
+  ]
+}
+```
+
+If `charge` fails terminally, `cancel_flight` runs, then `cancel_hotel`, then
+the workflow ends `FAILED` with
+`card declined (compensated: book_flight, book_hotel)`.
+
+---
+
+## Failure workflows
+
+A definition may name a `failureWorkflow`, started when a run ends `FAILED` or
+`TIMED_OUT` (never `TERMINATED`). It runs as its own execution, with its own
+history and retries.
+
+Its input is the **failed run's input**, plus:
+
+| Key | Value |
+|---|---|
+| `workflowId` | The id of the run that failed. |
+| `workflowType` | Its definition name. |
+| `workflowVersion` | Its definition version. |
+| `reason` | The failure reason. |
+| `failureStatus` | `FAILED` or `TIMED_OUT`. |
+
+It is started with an idempotency key derived from the failed run, so a
+replayed evaluation or a sweeper racing the decider starts it at most once. A
+definition that names **itself** as its own failure workflow is ignored, so a
+failing handler cannot start itself forever.
+
+```json
+{
+  "name": "order_failed",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "page_oncall",
+      "taskReferenceName": "page_oncall",
+      "type": "HTTP",
+      "inputParameters": {
+        "uri": "https://events.pagerduty.com/v2/enqueue",
+        "method": "POST",
+        "body": {
+          "routing_key": "${secrets.PAGERDUTY_KEY}",
+          "event_action": "trigger",
+          "payload": {
+            "summary": "${workflow.input.workflowType} failed: ${workflow.input.reason}",
+            "source": "node-flow",
+            "severity": "error",
+            "custom_details": { "workflowId": "${workflow.input.workflowId}" }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+## Workflow output
+
+Without `outputParameters`, a run's output is the **last completed task's**
+output. That is convenient for small workflows and ambiguous for anything else,
+so declare it:
+
+```json
+"outputParameters": {
+  "receipt": "${charge.output.txnId}",
+  "tracking": "${ship.output.trackingId}",
+  "total": "${tally.output.amount}"
+}
+```
+
+Each key is resolved independently. A key whose expression names a task that
+never ran — a branch not taken — resolves to `null` rather than failing a run
+that has otherwise finished.
+
+---
+
+## Writing definitions in TypeScript
+
+The JSON DSL stays the source of truth, but `@node-flow-dev/sdk` ships a typed
+builder that compiles to exactly those shapes. What it buys you is the one thing
+JSON cannot have: a misspelt `${charge.output.txnid}` is a compile error rather
+than a task that quietly receives nothing.
+
+```ts title="checkout.ts"
+import { workflow, compensation } from '@node-flow-dev/sdk';
+
+const flow = workflow<{ orderId: string; amount: number }>('checkout', {
+  version: 1,
+  description: 'Charge, then ship.',
+  timeoutSeconds: 3600,
+});
+
+const charge = flow.simple<{ txnId: string }>('charge', {
+  input: { amount: flow.input.amount },
+  retryCount: 3,
+  compensateWith: compensation((s) =>
+    s.simple('refund', { input: { txn: '${charge.output.txnId}' } })
+  ),
+});
+
+flow.simple('ship', { input: { txn: charge.output.txnId } });
+
+flow.output({ receipt: charge.output.txnId });
+
+export default flow.build(); // a WorkflowDefinition, schema-checked
+```
+
+Reading `charge.output.txnId` yields a typed reference that serialises to
+`"${charge.output.txnId}"`, and reading a field the type does not declare does
+not compile.
+
+The builder covers the common shapes — `simple`, `http`, `inline`, `wait`,
+`yield`, `human`, `subWorkflow`, `setVariable`, `terminate`, `switch`, `fork`,
+`loop` — and `build()` runs the result through `workflowDefinitionSchema`, so a
+malformed definition fails at build time rather than at registration.
+
+<Callout type="info">
+  `flow.fork(ref, branches)` adds the `JOIN` for you, named `{ref}_join`, with
+  `joinOn` set to each branch's last task. `flow.switch(...)` emits the
+  `value-param` form with an input parameter called `switchCaseValue`.
+</Callout>
+
+For anything the builder does not cover, write the JSON — the two are the same
+document, and you can mix a hand-written task into a built definition.
+
+---
+
+## Validating before you register
+
+```bash
+# Compile-check without registering: catches duplicate refs, joins on nothing,
+# a FORK_JOIN without a JOIN, a bad loop condition, a value-param that names
+# no input parameter.
+curl -X POST "$NF_URL/v1/ns/default/metadata/workflows/validate" \
+  -H "x-api-key: $NF_API_KEY" -H 'content-type: application/json' \
+  --data @fulfil_order.json
+```
+
+And run it, with everything external mocked, in milliseconds:
+
+```bash
+nf test fulfil_order.test.json
+```
+
+See [CLI](/docs/guide/cli#nf-test).
+
+## Next
+
+- [System tasks](/docs/guide/system-tasks) — `HTTP`, `INLINE`, jq, SQL, gRPC, webhooks, human tasks, AI.
+- [Execution controls](/docs/guide/execution-controls) — retries, timeouts, caps.
+- [Workers](/docs/guide/workers) — implementing the `SIMPLE` tasks above.

@@ -1,0 +1,17 @@
+{
+  "title": "Contributing",
+  "description": "Changing node-flow itself",
+  "root": true,
+  "pages": [
+    "index",
+    "---The system---",
+    "architecture",
+    "engine",
+    "correctness",
+    "data-model",
+    "---Working on it---",
+    "testing",
+    "conventions",
+    "releasing"
+  ]
+}

@@ -1,0 +1,5380 @@
+{
+  "version": "6.0",
+  "nxVersion": "23.2.0",
+  "pathMappings": {},
+  "nxJsonPlugins": [
+    {
+      "name": "@nx/js/typescript",
+      "options": {
+        "typecheck": {
+          "targetName": "typecheck"
+        },
+        "build": {
+          "targetName": "build",
+          "configName": "tsconfig.lib.json",
+          "buildDepsName": "build-deps",
+          "watchDepsName": "watch-deps"
+        }
+      }
+    },
+    {
+      "name": "@nx/vite/plugin",
+      "options": {
+        "buildTargetName": "build",
+        "serveTargetName": "serve",
+        "devTargetName": "dev",
+        "previewTargetName": "preview",
+        "serveStaticTargetName": "serve-static",
+        "typecheckTargetName": "typecheck",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps"
+      }
+    },
+    {
+      "name": "@nx/eslint/plugin",
+      "options": {
+        "targetName": "lint"
+      }
+    },
+    {
+      "name": "@nx/next/plugin",
+      "options": {
+        "startTargetName": "start",
+        "buildTargetName": "build",
+        "devTargetName": "dev",
+        "serveStaticTargetName": "serve-static",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps"
+      }
+    },
+    {
+      "name": "@nx/vitest",
+      "version": "23.2.0",
+      "options": {
+        "testTargetName": "test",
+        "ciTargetName": "test-ci",
+        "testMode": "watch"
+      }
+    },
+    {
+      "name": "@nx/webpack/plugin",
+      "options": {
+        "buildTargetName": "build",
+        "serveTargetName": "serve",
+        "previewTargetName": "preview",
+        "buildDepsTargetName": "build-deps",
+        "watchDepsTargetName": "watch-deps",
+        "serveStaticTargetName": "serve-static"
+      }
+    },
+    {
+      "name": "@nx/jest/plugin",
+      "options": {
+        "targetName": "test"
+      }
+    }
+  ],
+  "fileMap": {
+    "projectFileMap": {
+      "bench": [
+        {
+          "file": "packages/bench/README.md",
+          "hash": "3501034588302407748"
+        },
+        {
+          "file": "packages/bench/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/bench/package.json",
+          "hash": "4431613992304850523",
+          "deps": [
+            "npm:@types/pg@8.23.1",
+            "sdk",
+            "npm:pg",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/bench/src/bin.ts",
+          "hash": "14748987975694932103"
+        },
+        {
+          "file": "packages/bench/src/index.ts",
+          "hash": "15667038096217917952"
+        },
+        {
+          "file": "packages/bench/src/lib/cli.ts",
+          "hash": "12085132879760515770",
+          "deps": [
+            "sdk",
+            [
+              "npm:pg",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/bench/src/lib/harness.spec.ts",
+          "hash": "7147662187793791946",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/bench/src/lib/harness.ts",
+          "hash": "17195906765016834162"
+        },
+        {
+          "file": "packages/bench/src/lib/profiles.ts",
+          "hash": "2409462603592497928"
+        },
+        {
+          "file": "packages/bench/src/lib/report.ts",
+          "hash": "11236340924704389419"
+        },
+        {
+          "file": "packages/bench/src/lib/stats.ts",
+          "hash": "9969759273700950532"
+        },
+        {
+          "file": "packages/bench/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/bench/tsconfig.lib.json",
+          "hash": "6012768852387443403"
+        },
+        {
+          "file": "packages/bench/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/bench/vitest.config.mts",
+          "hash": "2073686611010810819",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "server": [
+        {
+          "file": "packages/server/eslint.config.mjs",
+          "hash": "2624537849564014525"
+        },
+        {
+          "file": "packages/server/package.json",
+          "hash": "5738671971692929117",
+          "deps": [
+            "npm:@nestjs/testing",
+            "npm:@testcontainers/postgresql",
+            "npm:@modelcontextprotocol/sdk",
+            "npm:@nestjs/common",
+            "npm:@nestjs/config",
+            "npm:@nestjs/core",
+            "npm:@nestjs/platform-fastify",
+            "bpmn",
+            "core",
+            "engine",
+            "sdk",
+            "store",
+            "tasks",
+            "testkit",
+            "npm:@node-saml/node-saml",
+            "npm:@opentelemetry/api@1.9.1",
+            "npm:@opentelemetry/exporter-trace-otlp-http",
+            "npm:@opentelemetry/instrumentation-http",
+            "npm:@opentelemetry/instrumentation-pg",
+            "npm:@opentelemetry/resources",
+            "npm:@opentelemetry/sdk-node",
+            "npm:@opentelemetry/semantic-conventions",
+            "npm:jose",
+            "npm:jq-wasm",
+            "npm:prom-client",
+            "npm:reflect-metadata",
+            "npm:rxjs@7.8.2",
+            "npm:tslib",
+            "npm:unpdf",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/ai/ai.module.ts",
+          "hash": "6442018813345476106",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "tasks",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/api-gateway/api-gateway.module.ts",
+          "hash": "6304542132963682260",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/api.spec.ts",
+          "hash": "11002461108265839779",
+          "deps": [
+            "npm:@nestjs/testing",
+            "npm:@nestjs/platform-fastify",
+            "core",
+            "store",
+            "tasks",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest",
+            [
+              "npm:@modelcontextprotocol/sdk",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/server/src/app/app.module.ts",
+          "hash": "16660126589980955763",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/assistant/assistant.module.ts",
+          "hash": "11375520264855425163",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "tasks",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/audit/audit.module.ts",
+          "hash": "267406426664287522",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/auth.controller.ts",
+          "hash": "5875799415870250607",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/auth.decorators.ts",
+          "hash": "12445408114313969989",
+          "deps": [
+            "npm:@nestjs/common",
+            "core"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/auth.guard.ts",
+          "hash": "14286545250480535791",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "store",
+            "core"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/auth.module.ts",
+          "hash": "6189333709820777164",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/authenticator.ts",
+          "hash": "8698730088896056124",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/authenticators.ts",
+          "hash": "5918301988151321205",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/oidc-verifier.spec.ts",
+          "hash": "6515635633845039684",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/oidc-verifier.ts",
+          "hash": "15247925013392951573"
+        },
+        {
+          "file": "packages/server/src/app/auth/saml.fixture.ts",
+          "hash": "7990506094966719886",
+          "deps": [
+            "npm:@node-saml/node-saml"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/saml.service.spec.ts",
+          "hash": "11974013779769447886",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/saml.service.ts",
+          "hash": "1983514569743568589",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@node-saml/node-saml"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/session.authenticator.ts",
+          "hash": "10456864226231808768",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/session.ts",
+          "hash": "2327562265950290653"
+        },
+        {
+          "file": "packages/server/src/app/auth/signed-flow.ts",
+          "hash": "14037966423744522668"
+        },
+        {
+          "file": "packages/server/src/app/auth/sso.service.spec.ts",
+          "hash": "13558243061006656655",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/sso.service.ts",
+          "hash": "1608159371288469789",
+          "deps": [
+            "npm:@nestjs/common"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/token.service.ts",
+          "hash": "7560645221739181733",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "npm:jose"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/user.controller.ts",
+          "hash": "2110596911665959763",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/auth/workload.authenticators.ts",
+          "hash": "7811287124606301717",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/access-policy.ts",
+          "hash": "7280070954546818744",
+          "deps": [
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/audit-snapshots.ts",
+          "hash": "10247744360444678716",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/audit.interceptor.ts",
+          "hash": "8067896346062793684",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "store",
+            "core",
+            "npm:rxjs@7.8.2"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/domain-error.filter.ts",
+          "hash": "14487583205718112236",
+          "deps": [
+            "npm:@nestjs/common",
+            "core"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/http-shutdown.service.ts",
+          "hash": "346515580920962994",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/namespace.resolver.ts",
+          "hash": "6504216620886602357",
+          "deps": [
+            "npm:@nestjs/common",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/common/zod.pipe.ts",
+          "hash": "5139953758051950701",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/conductor/conductor.module.ts",
+          "hash": "3335361595302120174",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/config/config.module.ts",
+          "hash": "15192384664596523355",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/config"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/config/config.schema.spec.ts",
+          "hash": "15945400273460727642",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/config/config.schema.ts",
+          "hash": "11932870475124291215",
+          "deps": [
+            "store",
+            "tasks",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/configure-app.ts",
+          "hash": "4285127461146757313",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/platform-fastify"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/database/database.module.ts",
+          "hash": "18045045534503175793",
+          "deps": [
+            "npm:@nestjs/common",
+            "store",
+            "tasks"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/environment/environment.module.ts",
+          "hash": "4543793386648819511",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/events/events.module.ts",
+          "hash": "4071051137350268958",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/execution/execution.module.ts",
+          "hash": "17972620625978761732",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "testkit",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/forms/forms.module.ts",
+          "hash": "9960529310793253239",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/groups/groups.module.ts",
+          "hash": "17877693453881306690",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/health/health.module.ts",
+          "hash": "13668559916730264833",
+          "deps": [
+            "npm:@nestjs/common",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/hooks/hooks.module.ts",
+          "hash": "8967507332297351670",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/human/human.module.ts",
+          "hash": "9794537418582823552",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/mcp-gateway/mcp-gateway.module.ts",
+          "hash": "13616528486166269965",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "npm:@modelcontextprotocol/sdk",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/metadata/metadata.module.ts",
+          "hash": "17815069572851031463",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "bpmn",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/metrics/metrics.module.ts",
+          "hash": "6083800616014858430",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:prom-client"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/namespaces/namespaces.module.ts",
+          "hash": "6921562901178530525",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/openapi/api-route.decorator.ts",
+          "hash": "15816592224735202922",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/openapi/openapi.module.ts",
+          "hash": "11922336783807629765",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/openapi/openapi.service.ts",
+          "hash": "839302356033881346",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/openapi/openapi.spec.ts",
+          "hash": "17030791414400329991",
+          "deps": [
+            "npm:@nestjs/common",
+            "npm:@nestjs/core",
+            "npm:@nestjs/testing",
+            "npm:@nestjs/platform-fastify",
+            "core",
+            "store",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/permissions/permissions.module.ts",
+          "hash": "17527645166981452130",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/queue/queue.module.ts",
+          "hash": "4744154776103072688",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/quotas/quotas.module.ts",
+          "hash": "4132560912308273904",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/realtime/realtime.module.ts",
+          "hash": "17211756594681125117",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:rxjs@7.8.2"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/realtime/realtime.spec.ts",
+          "hash": "4310159525927826325",
+          "deps": [
+            "npm:@nestjs/platform-fastify",
+            "npm:@nestjs/testing",
+            "core",
+            "store",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/runner/runner.module.ts",
+          "hash": "3878154757700346136",
+          "deps": [
+            "npm:@nestjs/common",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/saved-views/saved-views.module.ts",
+          "hash": "16976059530517779223",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/schedule/schedule.module.ts",
+          "hash": "13177619661526438643",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/schemas/schemas.module.ts",
+          "hash": "11345989841233332912",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/search-metrics.spec.ts",
+          "hash": "8841158787244654695",
+          "deps": [
+            "npm:@nestjs/platform-fastify",
+            "npm:@nestjs/testing",
+            "core",
+            "store",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/secrets/secrets.module.ts",
+          "hash": "108012904576793394",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/semaphores/semaphores.module.ts",
+          "hash": "14756851797990913432",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/simulation/simulation.module.ts",
+          "hash": "948473758163539703",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "tasks",
+            "testkit",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/sso/sso.module.ts",
+          "hash": "9494051810256036228",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/status-listeners/status-listeners.module.ts",
+          "hash": "6352065489935128990",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/tags/tags.module.ts",
+          "hash": "12016973383536939086",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/user-login.spec.ts",
+          "hash": "12489310985747322676",
+          "deps": [
+            "npm:@nestjs/platform-fastify",
+            "npm:@nestjs/testing",
+            "core",
+            "store",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/webhook/webhook.module.ts",
+          "hash": "3288461121506278105",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/worker-sdk.spec.ts",
+          "hash": "15948446872681985699",
+          "deps": [
+            "npm:@nestjs/platform-fastify",
+            "npm:@nestjs/testing",
+            "core",
+            "sdk",
+            "store",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/src/app/workload/workload.module.ts",
+          "hash": "4393955384565668110",
+          "deps": [
+            "npm:@nestjs/common",
+            "core",
+            "store",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/server/src/assets/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/server/src/main.ts",
+          "hash": "15770844601668925497",
+          "deps": [
+            [
+              "npm:@nestjs/platform-fastify",
+              "dynamic"
+            ],
+            [
+              "npm:@nestjs/common",
+              "dynamic"
+            ],
+            [
+              "npm:@nestjs/core",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/server/src/telemetry.ts",
+          "hash": "11356273216441502772",
+          "deps": [
+            "npm:@opentelemetry/exporter-trace-otlp-http",
+            "npm:@opentelemetry/instrumentation-http",
+            "npm:@opentelemetry/instrumentation-pg",
+            "npm:@opentelemetry/resources",
+            "npm:@opentelemetry/sdk-node",
+            "npm:@opentelemetry/semantic-conventions"
+          ]
+        },
+        {
+          "file": "packages/server/tsconfig.app.json",
+          "hash": "362331726860532496"
+        },
+        {
+          "file": "packages/server/tsconfig.json",
+          "hash": "9214820933160915425"
+        },
+        {
+          "file": "packages/server/tsconfig.spec.json",
+          "hash": "2921010516569240680"
+        },
+        {
+          "file": "packages/server/vitest.config.mts",
+          "hash": "16601917577238219725",
+          "deps": [
+            "npm:unplugin-swc",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/server/webpack.config.js",
+          "hash": "11344733281379532569",
+          "deps": [
+            "npm:@nx/webpack",
+            "npm:webpack"
+          ]
+        }
+      ],
+      "bpmn": [
+        {
+          "file": "packages/bpmn/README.md",
+          "hash": "9192603713465851129"
+        },
+        {
+          "file": "packages/bpmn/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/bpmn/package.json",
+          "hash": "5722297013409553124",
+          "deps": [
+            "npm:fast-xml-parser",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/bpmn/src/index.ts",
+          "hash": "4624398599980251082"
+        },
+        {
+          "file": "packages/bpmn/src/lib/bpmn.spec.ts",
+          "hash": "434619699204049402",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/bpmn/src/lib/bpmn.ts",
+          "hash": "11838865945881834854",
+          "deps": [
+            "npm:fast-xml-parser"
+          ]
+        },
+        {
+          "file": "packages/bpmn/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/bpmn/tsconfig.lib.json",
+          "hash": "14103480227577240953"
+        },
+        {
+          "file": "packages/bpmn/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/bpmn/vitest.config.mts",
+          "hash": "1023207800954956736",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "tasks": [
+        {
+          "file": "packages/tasks/README.md",
+          "hash": "561108338920845105"
+        },
+        {
+          "file": "packages/tasks/eslint.config.mjs",
+          "hash": "16162236139998764918",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/tasks/package.json",
+          "hash": "6005353052393570540",
+          "deps": [
+            "npm:nodemailer",
+            "npm:@testcontainers/postgresql",
+            "npm:@types/pg@8.23.1",
+            "npm:testcontainers",
+            "npm:@ai-sdk/anthropic",
+            "npm:@ai-sdk/google",
+            "npm:@ai-sdk/openai",
+            "npm:@ai-sdk/openai-compatible",
+            "npm:@grpc/grpc-js",
+            "npm:@grpc/proto-loader@0.8.1",
+            "npm:@modelcontextprotocol/sdk",
+            "core",
+            "npm:ai@7.0.105",
+            "npm:jq-wasm",
+            "npm:pg",
+            "npm:quickjs-emscripten",
+            "npm:tslib",
+            "npm:unpdf"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/index.ts",
+          "hash": "5310404954735653815"
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/agent.executor.ts",
+          "hash": "86085066053826080",
+          "deps": [
+            "core",
+            "npm:ai@7.0.105"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/ai.spec.ts",
+          "hash": "5711803424739615458",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/ai.ts",
+          "hash": "16828112030931574622",
+          "deps": [
+            "npm:@ai-sdk/anthropic",
+            "npm:@ai-sdk/google",
+            "npm:@ai-sdk/openai",
+            "npm:@ai-sdk/openai-compatible",
+            "core",
+            "npm:ai@7.0.105"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/assistant.ts",
+          "hash": "1536968059851866548",
+          "deps": [
+            "npm:ai@7.0.105",
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/embeddings.executor.ts",
+          "hash": "16928748024920675482",
+          "deps": [
+            "core",
+            "npm:ai@7.0.105"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/guardrails.ts",
+          "hash": "12599790128816519927",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/llm.executor.ts",
+          "hash": "8726941475023794785",
+          "deps": [
+            "core",
+            "npm:ai@7.0.105"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/mcp.ts",
+          "hash": "3091898717772276605",
+          "deps": [
+            "core",
+            "npm:@modelcontextprotocol/sdk"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/media.executor.ts",
+          "hash": "18016416931302588835",
+          "deps": [
+            "core",
+            "npm:ai@7.0.105",
+            [
+              "npm:unpdf",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/media.spec.ts",
+          "hash": "9804156775672887659",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/ai/testing.ts",
+          "hash": "3696631398751212021",
+          "deps": [
+            "npm:@modelcontextprotocol/sdk"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/circuit-breaker.spec.ts",
+          "hash": "2250406326485608815",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/circuit-breaker.ts",
+          "hash": "14627460093622255513"
+        },
+        {
+          "file": "packages/tasks/src/lib/email.executor.spec.ts",
+          "hash": "12981715822991340618",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/email.executor.ts",
+          "hash": "3445163887919559933",
+          "deps": [
+            "core",
+            [
+              "npm:nodemailer",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/executor.ts",
+          "hash": "3630054274974377188",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/grpc.executor.ts",
+          "hash": "7748400662064041802",
+          "deps": [
+            "core",
+            "npm:@grpc/grpc-js",
+            "npm:@grpc/proto-loader@0.8.1"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/grpc.spec.ts",
+          "hash": "6963349598873748992",
+          "deps": [
+            "core",
+            "npm:@grpc/grpc-js",
+            "npm:@grpc/proto-loader@0.8.1",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/http-poll.executor.ts",
+          "hash": "3551278112998331484",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/http-poll.spec.ts",
+          "hash": "2810099303289742996",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/http.executor.spec.ts",
+          "hash": "6418445445411572889",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/http.executor.ts",
+          "hash": "8500032066832652988",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/inline.executor.spec.ts",
+          "hash": "7487271278950565881",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/inline.executor.ts",
+          "hash": "18190605067090178665",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/jq.executor.ts",
+          "hash": "11749902374450647924",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/jq.runner.ts",
+          "hash": "15985564433501491942"
+        },
+        {
+          "file": "packages/tasks/src/lib/jq.spec.ts",
+          "hash": "3512022312026876327",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/jwt.executor.ts",
+          "hash": "17516025799210300626",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/jwt.spec.ts",
+          "hash": "1459316150406170743",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/registry.ts",
+          "hash": "4477327958009218566"
+        },
+        {
+          "file": "packages/tasks/src/lib/sandbox.ts",
+          "hash": "204179681697219841",
+          "deps": [
+            "core",
+            "npm:quickjs-emscripten"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/simple.executors.ts",
+          "hash": "7877985365234587426",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/sql.executor.ts",
+          "hash": "185500416621341669",
+          "deps": [
+            "core",
+            "npm:pg"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/sql.spec.ts",
+          "hash": "4255416032205278179",
+          "deps": [
+            "core",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/testing/pricing.proto",
+          "hash": "10398784531413233614"
+        },
+        {
+          "file": "packages/tasks/src/lib/update-secret.executor.ts",
+          "hash": "3360911704215496559",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/update-secret.spec.ts",
+          "hash": "9720497466136582812",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/tasks/src/lib/webhook.executor.ts",
+          "hash": "2776770673820929545",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/tasks/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/tasks/tsconfig.lib.json",
+          "hash": "10141617239798906683"
+        },
+        {
+          "file": "packages/tasks/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/tasks/vitest.config.mts",
+          "hash": "7301523622989899447",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "store": [
+        {
+          "file": "packages/store/README.md",
+          "hash": "5185380840693370030"
+        },
+        {
+          "file": "packages/store/eslint.config.mjs",
+          "hash": "1838302424122167810",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/package.json",
+          "hash": "14063846285161841369",
+          "deps": [
+            "npm:@aws-sdk/client-s3",
+            "npm:@aws-sdk/client-sqs",
+            "npm:amqplib",
+            "npm:ioredis",
+            "npm:kafkajs",
+            "npm:nats",
+            "npm:@testcontainers/postgresql",
+            "npm:@testcontainers/rabbitmq",
+            "npm:@testcontainers/redpanda",
+            "npm:@types/pg@8.23.1",
+            "npm:@types/validator",
+            "npm:testcontainers",
+            "core",
+            "engine",
+            "tasks",
+            "npm:@opentelemetry/api@1.9.1",
+            "npm:ajv@8.20.0",
+            "npm:ajv-formats",
+            "npm:croner",
+            "npm:kysely",
+            "npm:pg",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/store/src/index.ts",
+          "hash": "13260857875871387276"
+        },
+        {
+          "file": "packages/store/src/lib/ai.repository.spec.ts",
+          "hash": "5058499666300106406",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/ai.repository.ts",
+          "hash": "449245253956517162",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/audit.repository.ts",
+          "hash": "498073516135196340",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/background-runner.spec.ts",
+          "hash": "14355627786892344920",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/background-runner.ts",
+          "hash": "7842694686211900432"
+        },
+        {
+          "file": "packages/store/src/lib/blob-store.ts",
+          "hash": "15103454535180984685"
+        },
+        {
+          "file": "packages/store/src/lib/brokers.spec.ts",
+          "hash": "9568250354283583737",
+          "deps": [
+            "npm:@testcontainers/rabbitmq",
+            "npm:testcontainers",
+            "npm:vitest",
+            [
+              "npm:@aws-sdk/client-sqs",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/brokers.ts",
+          "hash": "12814323995135882327",
+          "deps": [
+            "core",
+            [
+              "npm:nats",
+              "dynamic"
+            ],
+            [
+              "npm:amqplib",
+              "dynamic"
+            ],
+            [
+              "npm:@aws-sdk/client-sqs",
+              "dynamic"
+            ],
+            [
+              "npm:ioredis",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/concurrency.repository.ts",
+          "hash": "5708393777225877949",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/concurrency.spec.ts",
+          "hash": "10786639116201230324",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/database.spec.ts",
+          "hash": "15839426544444687095",
+          "deps": [
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/database.ts",
+          "hash": "3838406519652014823",
+          "deps": [
+            "npm:kysely",
+            "npm:pg"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/decide-notifier.ts",
+          "hash": "13136732389380171271"
+        },
+        {
+          "file": "packages/store/src/lib/decide-queue.repository.spec.ts",
+          "hash": "9817204198214637381",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/decide-queue.repository.ts",
+          "hash": "14187096452093817636",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/definition-bundle.spec.ts",
+          "hash": "11386956086991466112",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/definition-bundle.ts",
+          "hash": "965345959797928550",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/domain-and-schema.spec.ts",
+          "hash": "13851764699312225749",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/engine-metrics.ts",
+          "hash": "14981058209461441248",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/engine-runners.spec.ts",
+          "hash": "7760444658281623288",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/engine-runners.ts",
+          "hash": "1431231783126762007"
+        },
+        {
+          "file": "packages/store/src/lib/environment.repository.spec.ts",
+          "hash": "6454271866098435130",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/environment.repository.ts",
+          "hash": "1824499429342692717",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/evaluator-deep.spec.ts",
+          "hash": "452543147439358127",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/evaluator.spec.ts",
+          "hash": "2191502437351679551",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/evaluator.ts",
+          "hash": "432457461987012083",
+          "deps": [
+            "core",
+            "engine"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/event-dispatcher.ts",
+          "hash": "18215275261553690675",
+          "deps": [
+            "core",
+            "engine",
+            "tasks"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/event-execution.repository.ts",
+          "hash": "11147583253375502922",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/event-handler.repository.ts",
+          "hash": "858320640942416086",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/event-handler.spec.ts",
+          "hash": "6064144595270843081",
+          "deps": [
+            "core",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/event-task.spec.ts",
+          "hash": "9983322272019191828",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/execution-control.service.ts",
+          "hash": "15543327466153504431",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/execution-control.spec.ts",
+          "hash": "9779180040040483219",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/execution-query.spec.ts",
+          "hash": "6838221592770151207",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/execution-query.ts",
+          "hash": "12569844460208697092",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/form-template.repository.ts",
+          "hash": "16004795048862349601",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/group.repository.ts",
+          "hash": "8912820473046911677",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/hardening.spec.ts",
+          "hash": "266572940207106477",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/human-task.repository.ts",
+          "hash": "2081444678035280455",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/human-task.spec.ts",
+          "hash": "15491464894886525984",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/identity.repository.spec.ts",
+          "hash": "18043900214728124315",
+          "deps": [
+            "core",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/identity.repository.ts",
+          "hash": "14470139984243181923",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/incoming-webhook.repository.ts",
+          "hash": "5410113031317689106",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/incoming-webhook.spec.ts",
+          "hash": "5249902513117764006",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/isolation-and-races.spec.ts",
+          "hash": "9172348471611395375",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/kafka-sink.ts",
+          "hash": "4357096341848151164",
+          "deps": [
+            "core",
+            [
+              "npm:kafkajs",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/kafka-source.ts",
+          "hash": "3786236413733973121",
+          "deps": [
+            "core",
+            [
+              "npm:kafkajs",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/kafka.spec.ts",
+          "hash": "7803303750409601376",
+          "deps": [
+            "core",
+            "engine",
+            "npm:@testcontainers/redpanda",
+            "npm:vitest",
+            [
+              "npm:kafkajs",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/long-poll.service.ts",
+          "hash": "7404961722464790353"
+        },
+        {
+          "file": "packages/store/src/lib/long-poll.spec.ts",
+          "hash": "8174573424260222105",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/metadata.repository.spec.ts",
+          "hash": "8393427613906433697",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/metadata.repository.ts",
+          "hash": "4788914502938607441",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0001-core-schema.ts",
+          "hash": "13311518176379578902",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0002-payload-refs.ts",
+          "hash": "10579709260325865812",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0003-identity.ts",
+          "hash": "17187344023086515537",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0004-search-indexes.ts",
+          "hash": "9557298613186246741",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0005-users.ts",
+          "hash": "7001857405753213785",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0006-task-domain.ts",
+          "hash": "16904509664831351034",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0007-system-tasks.ts",
+          "hash": "17010126650558755743",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0008-webhook-callbacks.ts",
+          "hash": "2250191867077348728",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0009-human-tasks.ts",
+          "hash": "3997343513674616940",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0010-schedules.ts",
+          "hash": "3672709129239527850",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0011-event-handlers.ts",
+          "hash": "3126651516304604511",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0012-secrets.ts",
+          "hash": "11704381380552250840",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0013-groups.ts",
+          "hash": "11580664240116528461",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0014-audit.ts",
+          "hash": "4755360881162242625",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0015-secret-output-fields.ts",
+          "hash": "2847062638770936432",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0016-workload-identity.ts",
+          "hash": "14007518340737841836",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0017-resource-tags.ts",
+          "hash": "9673516624191200091",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0018-workflow-event-notify.ts",
+          "hash": "8721557558658960876",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0019-task-logs.ts",
+          "hash": "1289758164863286552",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0020-worker-polls.ts",
+          "hash": "2398110619563660632",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0021-environment-variables.ts",
+          "hash": "6960727845071265675",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0022-schemas.ts",
+          "hash": "8619775631153942305",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0023-form-templates.ts",
+          "hash": "1552437519659296422",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0024-human-task-assignments.ts",
+          "hash": "6295961270139649871",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0025-task-output-cache.ts",
+          "hash": "5464631321882991989",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0026-workflow-rate-limits.ts",
+          "hash": "3710664935543669847",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0027-event-executions.ts",
+          "hash": "3958706979929790464",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0028-incoming-webhooks.ts",
+          "hash": "12140721973813010738",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0029-workflow-messages.ts",
+          "hash": "8630242204316519163",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0030-human-task-triggers.ts",
+          "hash": "8998474121716439179",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0031-status-listeners.ts",
+          "hash": "18070689939486349589",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0032-schedule-runs.ts",
+          "hash": "3717171856687945370",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0033-execution-search.ts",
+          "hash": "2457726297298972041",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0034-task-to-domain.ts",
+          "hash": "9661493762874267237",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0035-resource-grants.ts",
+          "hash": "12316895135163582445",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0036-ai.ts",
+          "hash": "16029392918217092045",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/migrations/0037-trace-context.ts",
+          "hash": "2268139217248410984",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/namespace.repository.ts",
+          "hash": "2663599807405401412",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/openapi-operations.spec.ts",
+          "hash": "13483150977135979858",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/openapi-operations.ts",
+          "hash": "1976870024024782205",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/outbox-relay.ts",
+          "hash": "329212589082036429",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/outbox.repository.ts",
+          "hash": "12395582000281337903",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/output-sealer.ts",
+          "hash": "4631069288728494958",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/partition-manager.ts",
+          "hash": "14350794562563134",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/password.ts",
+          "hash": "17738657678779408230"
+        },
+        {
+          "file": "packages/store/src/lib/payload-gc.ts",
+          "hash": "5797681989150766978",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/payload-offload.spec.ts",
+          "hash": "10725966037269273634",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/payload-store.ts",
+          "hash": "6391357458552929104",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/pg-channel-listener.ts",
+          "hash": "10331169986828403911",
+          "deps": [
+            "npm:pg"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/pg-errors.ts",
+          "hash": "12245811354987161656"
+        },
+        {
+          "file": "packages/store/src/lib/policy-enforcement.spec.ts",
+          "hash": "8576252716337363003",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/queue-notifier.ts",
+          "hash": "549819146911997076"
+        },
+        {
+          "file": "packages/store/src/lib/quota.service.ts",
+          "hash": "10952241833183668585",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/resource-grant.repository.ts",
+          "hash": "5485027180880693991",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/runners.spec.ts",
+          "hash": "5610287726720085613",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/s3-blob-store.spec.ts",
+          "hash": "13477281713726607660",
+          "deps": [
+            "npm:testcontainers",
+            "npm:vitest",
+            [
+              "npm:@aws-sdk/client-s3",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/s3-blob-store.ts",
+          "hash": "12139984151851721093",
+          "deps": [
+            [
+              "npm:@aws-sdk/client-s3",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/saved-view.repository.ts",
+          "hash": "14906815676632931898",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/saved-view.spec.ts",
+          "hash": "18073409391149962039",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/schedule.repository.ts",
+          "hash": "15751142785861227657",
+          "deps": [
+            "core",
+            "npm:croner",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/scheduler.runner.ts",
+          "hash": "4831493873766548016",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/scheduler.spec.ts",
+          "hash": "5893313733236378492",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/schema-registry.repository.spec.ts",
+          "hash": "3215646233474109184",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/schema-registry.repository.ts",
+          "hash": "13316043442903384118",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/schema-validator.ts",
+          "hash": "5245858073083514996",
+          "deps": [
+            "core",
+            "npm:ajv@8.20.0",
+            "npm:ajv-formats"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/schema.ts",
+          "hash": "129159021826936781",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/search.repository.spec.ts",
+          "hash": "10764659571865715555",
+          "deps": [
+            "core",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/search.repository.ts",
+          "hash": "3355330259628781580",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/secret-crypto.ts",
+          "hash": "6490714949707957794"
+        },
+        {
+          "file": "packages/store/src/lib/secret-resolver.ts",
+          "hash": "5448229855831210032",
+          "deps": [
+            "core",
+            "engine"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/secret.repository.ts",
+          "hash": "17833588517941748998",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/secrets.spec.ts",
+          "hash": "3979336790397607107",
+          "deps": [
+            "core",
+            "npm:vitest",
+            "engine"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/seed.spec.ts",
+          "hash": "15530173074134235824",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/seed.ts",
+          "hash": "18217397934062176071",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/status-listener.repository.ts",
+          "hash": "5285297234983796631",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/status-listener.spec.ts",
+          "hash": "3323418693970555085",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/stuck-workflow-sweeper.ts",
+          "hash": "9293083007707913202",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/system-task.runner.ts",
+          "hash": "7131580131201952112",
+          "deps": [
+            "core",
+            "tasks"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/system-task.spec.ts",
+          "hash": "12917579341399594795",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "tasks",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/task-dispatch.service.ts",
+          "hash": "5924407145222546317",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/task-log.repository.spec.ts",
+          "hash": "18137794634329563453",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/task-log.repository.ts",
+          "hash": "340545950487781965"
+        },
+        {
+          "file": "packages/store/src/lib/task-queue.repository.spec.ts",
+          "hash": "5575411289009942634",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/task-queue.repository.ts",
+          "hash": "8954535606984332000",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/templates.spec.ts",
+          "hash": "6628849671762651254",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/testing/postgres-harness.ts",
+          "hash": "13929514910057734432",
+          "deps": [
+            "npm:@testcontainers/postgresql",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/timeout-sweeper.ts",
+          "hash": "312224855044506125",
+          "deps": [
+            "core",
+            "engine"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/timer.repository.ts",
+          "hash": "16827402843125456684",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/trace-context.ts",
+          "hash": "16153838978799359726",
+          "deps": [
+            "npm:@opentelemetry/api@1.9.1"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/user.repository.spec.ts",
+          "hash": "13847690373900508663",
+          "deps": [
+            "core",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/user.repository.ts",
+          "hash": "12203849402886814006",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/webhook-verifiers.spec.ts",
+          "hash": "270675729407657203",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/webhook-verifiers.ts",
+          "hash": "12040765637434946356"
+        },
+        {
+          "file": "packages/store/src/lib/webhook.repository.ts",
+          "hash": "11654677032763737238",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/webhook.spec.ts",
+          "hash": "8524132334408188602",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/worker-poll.repository.spec.ts",
+          "hash": "2525851267869917538",
+          "deps": [
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/worker-poll.repository.ts",
+          "hash": "9995805896988205287",
+          "deps": [
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow-event-notifier.ts",
+          "hash": "10762839868683215068"
+        },
+        {
+          "file": "packages/store/src/lib/workflow-events.repository.ts",
+          "hash": "12043656387843410241",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow-message.repository.ts",
+          "hash": "11161073107477769187",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow-message.spec.ts",
+          "hash": "6964455470765382778",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow-rate-limit.spec.ts",
+          "hash": "12684699091599773526",
+          "deps": [
+            "core",
+            "engine",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow-start.handlers.ts",
+          "hash": "11866297270518445738",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow-stream.spec.ts",
+          "hash": "7328920317804614726",
+          "deps": [
+            "core",
+            "npm:kysely",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workflow.repository.ts",
+          "hash": "13562635026646064853",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/src/lib/workload-identity.repository.ts",
+          "hash": "9624538558153946439",
+          "deps": [
+            "core",
+            "npm:kysely"
+          ]
+        },
+        {
+          "file": "packages/store/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/store/tsconfig.lib.json",
+          "hash": "17749351046520141585"
+        },
+        {
+          "file": "packages/store/tsconfig.spec.json",
+          "hash": "13667349813065987377"
+        },
+        {
+          "file": "packages/store/vitest.config.mts",
+          "hash": "15597705050594327819",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "sdk": [
+        {
+          "file": "packages/sdk/README.md",
+          "hash": "13491798393782330436"
+        },
+        {
+          "file": "packages/sdk/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/sdk/package.json",
+          "hash": "477098036689825562",
+          "deps": [
+            "testkit",
+            "core",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/sdk/src/index.ts",
+          "hash": "18352545828590226669"
+        },
+        {
+          "file": "packages/sdk/src/lib/builder.spec.ts",
+          "hash": "2698205617568841318",
+          "deps": [
+            "testkit",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/sdk/src/lib/builder.ts",
+          "hash": "5766228653723759800",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/sdk/src/lib/client.spec.ts",
+          "hash": "15308646120820641814",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/sdk/src/lib/client.ts",
+          "hash": "11099481483118893654",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/sdk/src/lib/worker.ts",
+          "hash": "16493751870948580859",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/sdk/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/sdk/tsconfig.lib.json",
+          "hash": "17336897701562502805"
+        },
+        {
+          "file": "packages/sdk/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/sdk/vitest.config.mts",
+          "hash": "2093749570784498204",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "testkit": [
+        {
+          "file": "packages/testkit/README.md",
+          "hash": "7731920889406275512"
+        },
+        {
+          "file": "packages/testkit/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/testkit/package.json",
+          "hash": "226653089036052428",
+          "deps": [
+            "core",
+            "engine",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/testkit/src/index.ts",
+          "hash": "17440937681315329817"
+        },
+        {
+          "file": "packages/testkit/src/lib/replay.spec.ts",
+          "hash": "16106144417654349376",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/testkit/src/lib/replay.ts",
+          "hash": "3671587005032085573",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/testkit/src/lib/simulate.spec.ts",
+          "hash": "15117604452776177561",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/testkit/src/lib/simulate.ts",
+          "hash": "17718007204416710189",
+          "deps": [
+            "core",
+            "engine"
+          ]
+        },
+        {
+          "file": "packages/testkit/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/testkit/tsconfig.lib.json",
+          "hash": "311034800716134852"
+        },
+        {
+          "file": "packages/testkit/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/testkit/vitest.config.mts",
+          "hash": "10664132707167111573",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "core": [
+        {
+          "file": "packages/core/README.md",
+          "hash": "4369172407730148539"
+        },
+        {
+          "file": "packages/core/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/core/package.json",
+          "hash": "7918792351965603722",
+          "deps": [
+            "npm:tslib",
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/core/src/index.ts",
+          "hash": "10598183592574316592"
+        },
+        {
+          "file": "packages/core/src/lib/auth.spec.ts",
+          "hash": "2430336218563269066",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/auth.ts",
+          "hash": "8817079368147489654"
+        },
+        {
+          "file": "packages/core/src/lib/definitions.spec.ts",
+          "hash": "16127257651693745837",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/definitions.ts",
+          "hash": "1355892637226121427",
+          "deps": [
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/errors.ts",
+          "hash": "8952680668627013658"
+        },
+        {
+          "file": "packages/core/src/lib/execution.ts",
+          "hash": "5964783926695563995"
+        },
+        {
+          "file": "packages/core/src/lib/mask.spec.ts",
+          "hash": "9398029032791119542",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/mask.ts",
+          "hash": "5740352103000195326"
+        },
+        {
+          "file": "packages/core/src/lib/permissions.spec.ts",
+          "hash": "16843957207125080033",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/permissions.ts",
+          "hash": "13723925190890834436"
+        },
+        {
+          "file": "packages/core/src/lib/policies.spec.ts",
+          "hash": "4010320063906759399",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/policies.ts",
+          "hash": "4893086412598327224",
+          "deps": [
+            "npm:zod"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/sealed.ts",
+          "hash": "8126417137212236693"
+        },
+        {
+          "file": "packages/core/src/lib/status.spec.ts",
+          "hash": "16592960144983840525",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/core/src/lib/status.ts",
+          "hash": "18209507756363056997"
+        },
+        {
+          "file": "packages/core/src/lib/task-type.ts",
+          "hash": "8778915663840758768"
+        },
+        {
+          "file": "packages/core/src/lib/templates.ts",
+          "hash": "10503972626638899824"
+        },
+        {
+          "file": "packages/core/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/core/tsconfig.lib.json",
+          "hash": "14103480227577240953"
+        },
+        {
+          "file": "packages/core/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/core/vitest.config.mts",
+          "hash": "9395411127689052442",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "docs": [
+        {
+          "file": "packages/docs/.swcrc",
+          "hash": "4532740859193830353"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/architecture.mdx",
+          "hash": "1882304532394165408"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/conventions.mdx",
+          "hash": "4842579364704898634"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/correctness.mdx",
+          "hash": "8467255112496288015"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/data-model.mdx",
+          "hash": "14285119238252422443"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/engine.mdx",
+          "hash": "6895121911054446416"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/index.mdx",
+          "hash": "798923154667833934"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/meta.json",
+          "hash": "17095929364855949324"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/releasing.mdx",
+          "hash": "3712015103599224233"
+        },
+        {
+          "file": "packages/docs/content/docs/contributing/testing.mdx",
+          "hash": "4420714297884363338"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/api.mdx",
+          "hash": "10317411593963785952"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/cli.mdx",
+          "hash": "17913462102248749631"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/concepts.mdx",
+          "hash": "8210866654420802315"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/configuration.mdx",
+          "hash": "10463316096638254715"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/execution-controls.mdx",
+          "hash": "8226673146293414022"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/index.mdx",
+          "hash": "14606058110930733780"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/meta.json",
+          "hash": "3313089432233644505"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/quickstart.mdx",
+          "hash": "7754526783154506804"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/security.mdx",
+          "hash": "14219199078572751734"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/self-hosting.mdx",
+          "hash": "13441059387084649428"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/system-tasks.mdx",
+          "hash": "2598494492660089278"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/troubleshooting.mdx",
+          "hash": "5803038636579900294"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/workers.mdx",
+          "hash": "2523582715576101267"
+        },
+        {
+          "file": "packages/docs/content/docs/guide/workflows.mdx",
+          "hash": "16199504779261305775"
+        },
+        {
+          "file": "packages/docs/eslint.config.mjs",
+          "hash": "14196284491797212514",
+          "deps": [
+            "npm:@next/eslint-plugin-next",
+            "npm:@nx/eslint-plugin"
+          ]
+        },
+        {
+          "file": "packages/docs/index.d.ts",
+          "hash": "10104733019222461272"
+        },
+        {
+          "file": "packages/docs/next-env.d.ts",
+          "hash": "17884542380368184820"
+        },
+        {
+          "file": "packages/docs/next.config.mjs",
+          "hash": "11472459592786428413",
+          "deps": [
+            "npm:fumadocs-mdx"
+          ]
+        },
+        {
+          "file": "packages/docs/package.json",
+          "hash": "12906747369891923625",
+          "deps": [
+            "npm:@tailwindcss/postcss",
+            "npm:@types/mdx",
+            "npm:tailwindcss",
+            "npm:@scalar/api-client-react",
+            "npm:beautiful-mermaid",
+            "npm:fumadocs-core",
+            "npm:fumadocs-mdx",
+            "npm:fumadocs-openapi",
+            "npm:fumadocs-ui",
+            "npm:next@16.3.5",
+            "npm:react",
+            "npm:react-dom"
+          ]
+        },
+        {
+          "file": "packages/docs/postcss.config.mjs",
+          "hash": "2815109554735370913"
+        },
+        {
+          "file": "packages/docs/public/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/docs/public/favicon.ico",
+          "hash": "8148191425185431597"
+        },
+        {
+          "file": "packages/docs/src/app/api-reference/[[...slug]]/page.tsx",
+          "hash": "16113832541917668661",
+          "deps": [
+            "npm:next@16.3.5",
+            "npm:fumadocs-ui"
+          ]
+        },
+        {
+          "file": "packages/docs/src/app/api-reference/layout.tsx",
+          "hash": "12443958577068580822",
+          "deps": [
+            "npm:react",
+            "npm:fumadocs-ui"
+          ]
+        },
+        {
+          "file": "packages/docs/src/app/api/search/route.ts",
+          "hash": "14125002691829065978",
+          "deps": [
+            "npm:fumadocs-core"
+          ]
+        },
+        {
+          "file": "packages/docs/src/app/docs/[[...slug]]/page.tsx",
+          "hash": "76056915350020318",
+          "deps": [
+            "npm:next@16.3.5",
+            "npm:fumadocs-ui"
+          ]
+        },
+        {
+          "file": "packages/docs/src/app/docs/layout.tsx",
+          "hash": "2693693133328949892",
+          "deps": [
+            "npm:react",
+            "npm:fumadocs-ui"
+          ]
+        },
+        {
+          "file": "packages/docs/src/app/global.css",
+          "hash": "18205410260474756800"
+        },
+        {
+          "file": "packages/docs/src/app/layout.tsx",
+          "hash": "6666920986369870669",
+          "deps": [
+            "npm:react",
+            "npm:fumadocs-ui"
+          ]
+        },
+        {
+          "file": "packages/docs/src/app/page.tsx",
+          "hash": "2089662816601778206",
+          "deps": [
+            "npm:next@16.3.5",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/docs/src/components/api-page.tsx",
+          "hash": "7099763682228849536",
+          "deps": [
+            "npm:fumadocs-openapi"
+          ]
+        },
+        {
+          "file": "packages/docs/src/components/mdx.tsx",
+          "hash": "604370408793139578",
+          "deps": [
+            "npm:fumadocs-ui",
+            "npm:@types/mdx"
+          ]
+        },
+        {
+          "file": "packages/docs/src/components/mermaid.tsx",
+          "hash": "439433067142622471",
+          "deps": [
+            "npm:beautiful-mermaid"
+          ]
+        },
+        {
+          "file": "packages/docs/src/lib/layout.shared.tsx",
+          "hash": "6501798654747221021",
+          "deps": [
+            "npm:fumadocs-ui"
+          ]
+        },
+        {
+          "file": "packages/docs/src/lib/openapi-source.ts",
+          "hash": "1131577595282910983",
+          "deps": [
+            "npm:fumadocs-core"
+          ]
+        },
+        {
+          "file": "packages/docs/src/lib/openapi.ts",
+          "hash": "14333798128373309215",
+          "deps": [
+            "npm:fumadocs-openapi"
+          ]
+        },
+        {
+          "file": "packages/docs/src/lib/source.ts",
+          "hash": "12390751013590642506",
+          "deps": [
+            "npm:fumadocs-mdx",
+            "npm:fumadocs-core"
+          ]
+        },
+        {
+          "file": "packages/docs/tsconfig.json",
+          "hash": "3714681671832202644"
+        }
+      ],
+      "cli": [
+        {
+          "file": "packages/cli/README.md",
+          "hash": "1136774106129052855"
+        },
+        {
+          "file": "packages/cli/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/cli/package.json",
+          "hash": "13635933699513686520",
+          "deps": [
+            "npm:@testcontainers/postgresql",
+            "core",
+            "store",
+            "testkit",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/cli/src/bin.ts",
+          "hash": "5197091962195863089"
+        },
+        {
+          "file": "packages/cli/src/index.ts",
+          "hash": "5552277989239051946"
+        },
+        {
+          "file": "packages/cli/src/lib/args.ts",
+          "hash": "13681734861483478397"
+        },
+        {
+          "file": "packages/cli/src/lib/bootstrap.spec.ts",
+          "hash": "14518982328082145635",
+          "deps": [
+            "core",
+            "store",
+            "npm:@testcontainers/postgresql",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/cli/src/lib/bootstrap.ts",
+          "hash": "7211529515341987878",
+          "deps": [
+            "core",
+            "store"
+          ]
+        },
+        {
+          "file": "packages/cli/src/lib/commands.spec.ts",
+          "hash": "7859606227180761471",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/cli/src/lib/commands.ts",
+          "hash": "4455228416109895932",
+          "deps": [
+            "testkit"
+          ]
+        },
+        {
+          "file": "packages/cli/src/lib/main.ts",
+          "hash": "12539367619269178725",
+          "deps": [
+            "store"
+          ]
+        },
+        {
+          "file": "packages/cli/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/cli/tsconfig.lib.json",
+          "hash": "1275350044782850375"
+        },
+        {
+          "file": "packages/cli/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/cli/vitest.config.mts",
+          "hash": "9614779215099713450",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "server-e2e": [
+        {
+          "file": "packages/server-e2e/.spec.swcrc",
+          "hash": "18201067170784284381"
+        },
+        {
+          "file": "packages/server-e2e/eslint.config.mjs",
+          "hash": "2624537849564014525"
+        },
+        {
+          "file": "packages/server-e2e/jest.config.cts",
+          "hash": "737990278740891613"
+        },
+        {
+          "file": "packages/server-e2e/package.json",
+          "hash": "7242277823980072763",
+          "deps": [
+            "npm:axios@1.20.0"
+          ]
+        },
+        {
+          "file": "packages/server-e2e/src/server/server.spec.ts",
+          "hash": "2379030078146991075",
+          "deps": [
+            "npm:axios@1.20.0"
+          ]
+        },
+        {
+          "file": "packages/server-e2e/src/support/global-setup.ts",
+          "hash": "10817858795115919263",
+          "deps": [
+            "npm:@nx/node"
+          ]
+        },
+        {
+          "file": "packages/server-e2e/src/support/global-teardown.ts",
+          "hash": "14210317125869451873",
+          "deps": [
+            "npm:@nx/node"
+          ]
+        },
+        {
+          "file": "packages/server-e2e/src/support/test-setup.ts",
+          "hash": "15521797170623961900",
+          "deps": [
+            "npm:axios@1.20.0"
+          ]
+        },
+        {
+          "file": "packages/server-e2e/tsconfig.json",
+          "hash": "17546533031249262782"
+        }
+      ],
+      "engine": [
+        {
+          "file": "packages/engine/README.md",
+          "hash": "11501804822994619256"
+        },
+        {
+          "file": "packages/engine/eslint.config.mjs",
+          "hash": "17582313997262173935",
+          "deps": [
+            [
+              "npm:jsonc-eslint-parser",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/engine/package.json",
+          "hash": "13712020935940603239",
+          "deps": [
+            "core",
+            "npm:tslib"
+          ]
+        },
+        {
+          "file": "packages/engine/src/index.ts",
+          "hash": "16732963614328227783"
+        },
+        {
+          "file": "packages/engine/src/lib/blueprint.spec.ts",
+          "hash": "8605462804795105632",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/blueprint.ts",
+          "hash": "3638477988224128947",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/commands.ts",
+          "hash": "295845781893416052",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/decide-dynamic.spec.ts",
+          "hash": "7778339697013601625",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/decide-join.spec.ts",
+          "hash": "14030650436594690155",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/decide-operators.spec.ts",
+          "hash": "2549672210242931235",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/decide.spec.ts",
+          "hash": "11215925150030593607",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/decide.ts",
+          "hash": "5290261014870510539",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/expression.ts",
+          "hash": "5719514781970107533",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/jsonpath.spec.ts",
+          "hash": "11751339988524428657",
+          "deps": [
+            "core",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/engine/src/lib/jsonpath.ts",
+          "hash": "13028089820570067761",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/engine/tsconfig.json",
+          "hash": "12834038490315927699"
+        },
+        {
+          "file": "packages/engine/tsconfig.lib.json",
+          "hash": "10141617239798906683"
+        },
+        {
+          "file": "packages/engine/tsconfig.spec.json",
+          "hash": "12757693314151657395"
+        },
+        {
+          "file": "packages/engine/vitest.config.mts",
+          "hash": "1154099526454358303",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "ui": [
+        {
+          "file": "packages/ui/.swcrc",
+          "hash": "4532740859193830353"
+        },
+        {
+          "file": "packages/ui/eslint.config.mjs",
+          "hash": "14196284491797212514",
+          "deps": [
+            "npm:@next/eslint-plugin-next",
+            "npm:@nx/eslint-plugin"
+          ]
+        },
+        {
+          "file": "packages/ui/index.d.ts",
+          "hash": "10104733019222461272"
+        },
+        {
+          "file": "packages/ui/next-env.d.ts",
+          "hash": "18119713333627316080"
+        },
+        {
+          "file": "packages/ui/next.config.js",
+          "hash": "10926464641029497150"
+        },
+        {
+          "file": "packages/ui/package.json",
+          "hash": "16081955115764680198",
+          "deps": [
+            "engine",
+            "npm:@tailwindcss/postcss",
+            "npm:postcss@8.5.28",
+            "npm:tailwindcss",
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:@heroui/styles",
+            "core",
+            "npm:@scalar/api-reference-react",
+            "npm:@tanstack/react-query",
+            "npm:@xyflow/react",
+            "npm:next@16.1.7",
+            "npm:react",
+            "npm:react-dom"
+          ]
+        },
+        {
+          "file": "packages/ui/postcss.config.mjs",
+          "hash": "2815109554735370913"
+        },
+        {
+          "file": "packages/ui/public/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/ui/public/brand/node-flow.png",
+          "hash": "15403524928884661973"
+        },
+        {
+          "file": "packages/ui/public/favicon.ico",
+          "hash": "8148191425185431597"
+        },
+        {
+          "file": "packages/ui/specs/hydration.spec.tsx",
+          "hash": "12024206808418683142",
+          "deps": [
+            "npm:react",
+            "npm:react-dom",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/specs/index.spec.tsx",
+          "hash": "2873936096691223229",
+          "deps": [
+            "npm:react",
+            "npm:@testing-library/react"
+          ]
+        },
+        {
+          "file": "packages/ui/specs/no-clock-in-markup.spec.ts",
+          "hash": "4202435763624563796",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/applications/applications-admin.tsx",
+          "hash": "16381385460312515136",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/applications/page.tsx",
+          "hash": "2383914640692281453",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/audit/audit-log.tsx",
+          "hash": "14287302681078998414",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/audit/page.tsx",
+          "hash": "1025822044552863034",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/groups/groups-admin.tsx",
+          "hash": "13063564065302593650",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/groups/page.tsx",
+          "hash": "14471709871585164259",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/namespaces/namespaces-admin.tsx",
+          "hash": "12873142710278094589",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/namespaces/page.tsx",
+          "hash": "3761691905849135106",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/permissions/page.tsx",
+          "hash": "18194396843105804354",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/permissions/permissions-admin.tsx",
+          "hash": "6788887331387239417",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/secrets/page.tsx",
+          "hash": "9763650917241453915",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/secrets/secrets-admin.tsx",
+          "hash": "4958579767386220046",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/tags/page.tsx",
+          "hash": "2322165629721858463",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/tags/tags-dashboard.tsx",
+          "hash": "9301310235030994604",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/users/page.tsx",
+          "hash": "6233980477832797748",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/admin/users/users-admin.tsx",
+          "hash": "1019216559778272016",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/assistant/assistant-chat.tsx",
+          "hash": "17929576675259453257",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/assistant/page.tsx",
+          "hash": "6289448347457978773",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/indexes/[index]/page.tsx",
+          "hash": "5525473459276586012",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/indexes/document-drawer.tsx",
+          "hash": "5467131987952945029",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/indexes/index-detail.tsx",
+          "hash": "13857520773140267682",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/indexes/index-list.tsx",
+          "hash": "9658704887890644942",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/indexes/page.tsx",
+          "hash": "16107415836543949810",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/integrations/integrations-admin.tsx",
+          "hash": "16907502166250417774",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/integrations/page.tsx",
+          "hash": "12260525807311910123",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/prompts/[name]/page.tsx",
+          "hash": "3242448583433650060",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/prompts/page.tsx",
+          "hash": "16454067276382634973",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/prompts/prompt-list.tsx",
+          "hash": "16927281664456644244",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/ai/prompts/prompt-studio.tsx",
+          "hash": "4066266165449303637",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/api-reference/api-reference.tsx",
+          "hash": "7076381849072059349",
+          "deps": [
+            "npm:@scalar/api-reference-react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/api-reference/page.tsx",
+          "hash": "2186611173581692606",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/environment/environment-list.tsx",
+          "hash": "7000967952338510960",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/environment/page.tsx",
+          "hash": "16524410840198706522",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/error.tsx",
+          "hash": "17705447706549124417",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/eventHandlerDef/handler-drawer.tsx",
+          "hash": "1461154375093606110",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/eventHandlerDef/handler-list.tsx",
+          "hash": "17312479303967243067",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/eventHandlerDef/page.tsx",
+          "hash": "5101938156200733970",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/eventMonitor/event-monitor.tsx",
+          "hash": "5342998366388251878",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/eventMonitor/page.tsx",
+          "hash": "5735527864400367742",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/agent-steps.tsx",
+          "hash": "17545303920873871926",
+          "deps": [
+            "npm:@heroui/react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/events-tab.tsx",
+          "hash": "13567717604465428330",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/execution-view.tsx",
+          "hash": "11267202910583324067",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "core",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/live.tsx",
+          "hash": "285422334254594040",
+          "deps": [
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/messages-tab.tsx",
+          "hash": "2481910487595623319",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/overview-strip.tsx",
+          "hash": "5729172068330167693",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/page.tsx",
+          "hash": "10904531188244225855",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/replay-dialog.tsx",
+          "hash": "13892378896497979107",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/resume-dialog.tsx",
+          "hash": "7770319084051287026",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/task-logs.tsx",
+          "hash": "11212105628154685103",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/task-panel.tsx",
+          "hash": "15996731796951113186",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "core",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/tasks-tab.tsx",
+          "hash": "6370164789631078239",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/time-travel.tsx",
+          "hash": "15718166747816555279",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/timeline-tab.tsx",
+          "hash": "12493078819208284072",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/execution/[id]/types.ts",
+          "hash": "7640406919062020516"
+        },
+        {
+          "file": "packages/ui/src/app/executions/execution-search.tsx",
+          "hash": "14642255812839644667",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/executions/page.tsx",
+          "hash": "3581207899068712002",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/executions/search-tools.tsx",
+          "hash": "10254645564638570855",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/forms/[name]/page.tsx",
+          "hash": "755344091106534231",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/forms/form-list.tsx",
+          "hash": "3859691703854658506",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/forms/page.tsx",
+          "hash": "2996857279682338879",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/global.css",
+          "hash": "4164928531666926587"
+        },
+        {
+          "file": "packages/ui/src/app/human/tasks/all-tasks.tsx",
+          "hash": "3100921319135798803",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/human/tasks/inbox.tsx",
+          "hash": "16301982777695946451",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/human/tasks/page.tsx",
+          "hash": "11417510663377070570",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/layout.tsx",
+          "hash": "4013156075252729417",
+          "deps": [
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/login/login-form.tsx",
+          "hash": "15412024854123230788",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/login/page.tsx",
+          "hash": "6065405181770715652",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/newForm/page.tsx",
+          "hash": "8839296215506310164",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/newTaskDef/page.tsx",
+          "hash": "15904896509505229286",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/newWorkflowDef/draft-editor.tsx",
+          "hash": "4703880307763144112",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/newWorkflowDef/page.tsx",
+          "hash": "9381186881145993555",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/not-found.tsx",
+          "hash": "13191696935160374470",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/overview/overview.tsx",
+          "hash": "9505485488609309802",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/overview/page.tsx",
+          "hash": "11707847770560103483",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/page.tsx",
+          "hash": "8368888123266558031",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/providers.tsx",
+          "hash": "2824135277654513750",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/scheduleDef/page.tsx",
+          "hash": "17917212706441313471",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/scheduleDef/schedule-drawer.tsx",
+          "hash": "17371724826114419933",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/scheduleDef/schedule-history.tsx",
+          "hash": "1191996768506419768",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/scheduleDef/schedule-list.tsx",
+          "hash": "14768671224713329064",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/schemas/page.tsx",
+          "hash": "10908419154254013565",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/schemas/schema-list.tsx",
+          "hash": "2961842086818533029",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/statusListeners/events.ts",
+          "hash": "15295044747127441858"
+        },
+        {
+          "file": "packages/ui/src/app/statusListeners/listener-drawer.tsx",
+          "hash": "14388181121611878567",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/statusListeners/listener-list.tsx",
+          "hash": "7021613589421305948",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/statusListeners/page.tsx",
+          "hash": "14327763844139915175",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/taskDef/[name]/page.tsx",
+          "hash": "9970483576141263972",
+          "deps": [
+            "npm:next@16.1.7",
+            "core"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/taskDef/page.tsx",
+          "hash": "6521798978349537362",
+          "deps": [
+            "core",
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/taskDef/task-def-list.tsx",
+          "hash": "14950761770188968692",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "core",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/taskQueue/page.tsx",
+          "hash": "9332325240877756482",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/taskQueue/queue-dashboard.tsx",
+          "hash": "6606036076856433471",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/v1/[...path]/route.ts",
+          "hash": "4008344685787378016",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/webhooks/page.tsx",
+          "hash": "4050559094120686459",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/webhooks/verifiers.ts",
+          "hash": "7635958066435629478"
+        },
+        {
+          "file": "packages/ui/src/app/webhooks/webhook-drawer.tsx",
+          "hash": "7303413506248394524",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/webhooks/webhook-list.tsx",
+          "hash": "12908486184208636643",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workers/page.tsx",
+          "hash": "14337680839782014166",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workers/worker-fleet.tsx",
+          "hash": "14553177334473533220",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/[name]/page.tsx",
+          "hash": "15887299581392107698",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/bpmn-import.tsx",
+          "hash": "14077063549286474551",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/bundle-tools.tsx",
+          "hash": "1284932829059990734",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/definition-list.tsx",
+          "hash": "4220784216983027730",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/page.tsx",
+          "hash": "12070864855739312441",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/run-workflow-modal.tsx",
+          "hash": "16436843648595419221",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/app/workflowDef/template-gallery.tsx",
+          "hash": "3418627350802741636",
+          "deps": [
+            "core",
+            "npm:@heroui/react",
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/admin/scope-picker.tsx",
+          "hash": "9721755559129814383",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/compare-versions.tsx",
+          "hash": "2714443922226222586",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/fields.tsx",
+          "hash": "2982976137675545833",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/palette.tsx",
+          "hash": "5473285934611374824",
+          "deps": [
+            "core",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/task-form.tsx",
+          "hash": "3820070733900336804",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "core",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/test-panel.tsx",
+          "hash": "15865329520668697488",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "core",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/use-editor.ts",
+          "hash": "13133473381937025269",
+          "deps": [
+            "core",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/workflow-editor.tsx",
+          "hash": "5816588368001312340",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react",
+            "core"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/workflow-graph.tsx",
+          "hash": "17952899682619942628",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "core",
+            "npm:@heroui/react",
+            "npm:@xyflow/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/dag/workflow-settings.tsx",
+          "hash": "409315354546301998",
+          "deps": [
+            "npm:@heroui/react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/events/test-message-dialog.tsx",
+          "hash": "18203703601161559394",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/forms/form-builder.tsx",
+          "hash": "5089591346297536975",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/forms/schema-form.tsx",
+          "hash": "11632365633532161139",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/permissions/grants.tsx",
+          "hash": "8736638938532446513",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/shell/brand.tsx",
+          "hash": "15314029339581587527"
+        },
+        {
+          "file": "packages/ui/src/components/shell/command-palette.tsx",
+          "hash": "4749248480089341029",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/shell/nav-items.ts",
+          "hash": "9442456480895876043",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/shell/page-header.tsx",
+          "hash": "18151355152342168214",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/shell/sidebar.tsx",
+          "hash": "18364044104658542331",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/shell/theme.tsx",
+          "hash": "14012869674119035378",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/tags/tag-editor.tsx",
+          "hash": "110848681943662491",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/taskdef/task-def-editor.tsx",
+          "hash": "14787434441459685919",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "core",
+            "npm:@heroui/react",
+            "npm:next@16.1.7",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/ui/ago.tsx",
+          "hash": "7342266087128887637"
+        },
+        {
+          "file": "packages/ui/src/components/ui/copy-button.tsx",
+          "hash": "18217699907609966129",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/ui/dropdown-trigger.ts",
+          "hash": "15801557789395102156",
+          "deps": [
+            "npm:@heroui/styles"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/ui/format.ts",
+          "hash": "7432473403422435895"
+        },
+        {
+          "file": "packages/ui/src/components/ui/json-viewer.tsx",
+          "hash": "5264392949999050813",
+          "deps": [
+            "npm:@gravity-ui/icons",
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/ui/local-time.tsx",
+          "hash": "12895899882748936488"
+        },
+        {
+          "file": "packages/ui/src/components/ui/state-diff.tsx",
+          "hash": "4068030286358909321",
+          "deps": [
+            "npm:@heroui/react",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/ui/status-chip.tsx",
+          "hash": "16069962263536050840",
+          "deps": [
+            "npm:@heroui/react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/components/ui/use-ticker.ts",
+          "hash": "6913125489285288946",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/access.spec.ts",
+          "hash": "7773049445982282923",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/access.ts",
+          "hash": "3463966526482249328"
+        },
+        {
+          "file": "packages/ui/src/lib/api.ts",
+          "hash": "15517705550852382924",
+          "deps": [
+            "npm:next@16.1.7"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/commit-pending.ts",
+          "hash": "10449755570626504409"
+        },
+        {
+          "file": "packages/ui/src/lib/dag/catalog.ts",
+          "hash": "5346543536802978668",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/dag.spec.ts",
+          "hash": "4537236050196271561",
+          "deps": [
+            "core",
+            "engine",
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/diff.spec.ts",
+          "hash": "5116081502282228911",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/diff.ts",
+          "hash": "6778590545054555998",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/edit.ts",
+          "hash": "4255594774161593970",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/graph.ts",
+          "hash": "176104999266120241",
+          "deps": [
+            "core"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/path.ts",
+          "hash": "13347230112292011296"
+        },
+        {
+          "file": "packages/ui/src/lib/dag/status.spec.ts",
+          "hash": "7082305905451114398",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/dag/status.ts",
+          "hash": "11703533140455357627"
+        },
+        {
+          "file": "packages/ui/src/lib/fetch-json.ts",
+          "hash": "6787792281734598413"
+        },
+        {
+          "file": "packages/ui/src/lib/mutate.ts",
+          "hash": "17700260074571316255"
+        },
+        {
+          "file": "packages/ui/src/lib/safe-return-to.spec.ts",
+          "hash": "5392396962061719480",
+          "deps": [
+            "npm:vitest"
+          ]
+        },
+        {
+          "file": "packages/ui/src/lib/safe-return-to.ts",
+          "hash": "7386125609223703039"
+        },
+        {
+          "file": "packages/ui/tsconfig.json",
+          "hash": "17769479050737321842"
+        },
+        {
+          "file": "packages/ui/tsconfig.spec.json",
+          "hash": "7429479497051586912"
+        },
+        {
+          "file": "packages/ui/vitest.config.mts",
+          "hash": "8843429661336721824",
+          "deps": [
+            "npm:vitest",
+            "npm:@vitejs/plugin-react"
+          ]
+        }
+      ],
+      "www": [
+        {
+          "file": "packages/www/.swcrc",
+          "hash": "4532740859193830353"
+        },
+        {
+          "file": "packages/www/eslint.config.mjs",
+          "hash": "14196284491797212514",
+          "deps": [
+            "npm:@next/eslint-plugin-next",
+            "npm:@nx/eslint-plugin"
+          ]
+        },
+        {
+          "file": "packages/www/index.d.ts",
+          "hash": "10104733019222461272"
+        },
+        {
+          "file": "packages/www/next-env.d.ts",
+          "hash": "17884542380368184820"
+        },
+        {
+          "file": "packages/www/next.config.mjs",
+          "hash": "4772003209673584765"
+        },
+        {
+          "file": "packages/www/package.json",
+          "hash": "3874840741759811249",
+          "deps": [
+            "npm:@tailwindcss/postcss",
+            "npm:tailwindcss",
+            "npm:next@16.3.5",
+            "npm:react",
+            "npm:react-dom"
+          ]
+        },
+        {
+          "file": "packages/www/postcss.config.mjs",
+          "hash": "2815109554735370913"
+        },
+        {
+          "file": "packages/www/public/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/www/public/brand/node-flow.png",
+          "hash": "15403524928884661973"
+        },
+        {
+          "file": "packages/www/public/favicon.ico",
+          "hash": "8148191425185431597"
+        },
+        {
+          "file": "packages/www/src/app/global.css",
+          "hash": "14468610163064357458"
+        },
+        {
+          "file": "packages/www/src/app/layout.tsx",
+          "hash": "15189476391110893123",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/www/src/app/page.tsx",
+          "hash": "12716966468873330694"
+        },
+        {
+          "file": "packages/www/src/components/logo.tsx",
+          "hash": "3030386123100128005"
+        },
+        {
+          "file": "packages/www/tsconfig.json",
+          "hash": "1388952825867878314"
+        }
+      ]
+    },
+    "nonProjectFiles": [
+      {
+        "file": ".agents/skills/link-workspace-packages/SKILL.md",
+        "hash": "6638592300654417978"
+      },
+      {
+        "file": ".agents/skills/monitor-ci/SKILL.md",
+        "hash": "8399173415832764241"
+      },
+      {
+        "file": ".agents/skills/monitor-ci/references/fix-flows.md",
+        "hash": "14499115380699629375"
+      },
+      {
+        "file": ".agents/skills/monitor-ci/scripts/ci-poll-decide.mjs",
+        "hash": "5080978990847760627"
+      },
+      {
+        "file": ".agents/skills/monitor-ci/scripts/ci-state-update.mjs",
+        "hash": "13401974159889364904"
+      },
+      {
+        "file": ".agents/skills/nx-generate/SKILL.md",
+        "hash": "12149253535688076771"
+      },
+      {
+        "file": ".agents/skills/nx-import/SKILL.md",
+        "hash": "9709061508228126022"
+      },
+      {
+        "file": ".agents/skills/nx-import/references/ESLINT.md",
+        "hash": "7412016826831212653"
+      },
+      {
+        "file": ".agents/skills/nx-import/references/GRADLE.md",
+        "hash": "15868511153961490698"
+      },
+      {
+        "file": ".agents/skills/nx-import/references/JEST.md",
+        "hash": "8022966628634571060"
+      },
+      {
+        "file": ".agents/skills/nx-import/references/NEXT.md",
+        "hash": "8705422121624482541"
+      },
+      {
+        "file": ".agents/skills/nx-import/references/TURBOREPO.md",
+        "hash": "6654032474246573297"
+      },
+      {
+        "file": ".agents/skills/nx-import/references/VITE.md",
+        "hash": "5793928500507593678"
+      },
+      {
+        "file": ".agents/skills/nx-plugins/SKILL.md",
+        "hash": "4717624081372438208"
+      },
+      {
+        "file": ".agents/skills/nx-run-tasks/SKILL.md",
+        "hash": "10723914446406921246"
+      },
+      {
+        "file": ".agents/skills/nx-workspace/SKILL.md",
+        "hash": "56694506768298655"
+      },
+      {
+        "file": ".agents/skills/nx-workspace/references/AFFECTED.md",
+        "hash": "10577828056523124002"
+      },
+      {
+        "file": ".claude/settings.json",
+        "hash": "8149073484594127246"
+      },
+      {
+        "file": ".codex/agents/ci-monitor-subagent.toml",
+        "hash": "4478062226442413400"
+      },
+      {
+        "file": ".codex/config.toml",
+        "hash": "7432973435562286270"
+      },
+      {
+        "file": ".cursor/agents/ci-monitor-subagent.md",
+        "hash": "14869577228457002810"
+      },
+      {
+        "file": ".cursor/commands/monitor-ci.md",
+        "hash": "9694566310897122482"
+      },
+      {
+        "file": ".cursor/skills/link-workspace-packages/SKILL.md",
+        "hash": "6638592300654417978"
+      },
+      {
+        "file": ".cursor/skills/monitor-ci/SKILL.md",
+        "hash": "2234589037131029925"
+      },
+      {
+        "file": ".cursor/skills/nx-generate/SKILL.md",
+        "hash": "16801959272346088877"
+      },
+      {
+        "file": ".cursor/skills/nx-plugins/SKILL.md",
+        "hash": "4717624081372438208"
+      },
+      {
+        "file": ".cursor/skills/nx-run-tasks/SKILL.md",
+        "hash": "10723914446406921246"
+      },
+      {
+        "file": ".cursor/skills/nx-workspace/SKILL.md",
+        "hash": "14445122489349943565"
+      },
+      {
+        "file": ".cursor/skills/nx-workspace/references/AFFECTED.md",
+        "hash": "10577828056523124002"
+      },
+      {
+        "file": ".dockerignore",
+        "hash": "1316879899629808697"
+      },
+      {
+        "file": ".gemini/commands/monitor-ci.toml",
+        "hash": "14184780502634171331"
+      },
+      {
+        "file": ".gemini/settings.json",
+        "hash": "14337936512237811016"
+      },
+      {
+        "file": ".github/agents/ci-monitor-subagent.agent.md",
+        "hash": "6573591679819005545"
+      },
+      {
+        "file": ".github/prompts/monitor-ci.prompt.md",
+        "hash": "373234804653081784"
+      },
+      {
+        "file": ".github/skills/link-workspace-packages/SKILL.md",
+        "hash": "6638592300654417978"
+      },
+      {
+        "file": ".github/skills/monitor-ci/SKILL.md",
+        "hash": "8399173415832764241"
+      },
+      {
+        "file": ".github/skills/monitor-ci/references/fix-flows.md",
+        "hash": "14499115380699629375"
+      },
+      {
+        "file": ".github/skills/monitor-ci/scripts/ci-poll-decide.mjs",
+        "hash": "5080978990847760627"
+      },
+      {
+        "file": ".github/skills/monitor-ci/scripts/ci-state-update.mjs",
+        "hash": "13401974159889364904"
+      },
+      {
+        "file": ".github/skills/nx-generate/SKILL.md",
+        "hash": "12149253535688076771"
+      },
+      {
+        "file": ".github/skills/nx-import/SKILL.md",
+        "hash": "9709061508228126022"
+      },
+      {
+        "file": ".github/skills/nx-import/references/ESLINT.md",
+        "hash": "7412016826831212653"
+      },
+      {
+        "file": ".github/skills/nx-import/references/GRADLE.md",
+        "hash": "15868511153961490698"
+      },
+      {
+        "file": ".github/skills/nx-import/references/JEST.md",
+        "hash": "8022966628634571060"
+      },
+      {
+        "file": ".github/skills/nx-import/references/NEXT.md",
+        "hash": "8705422121624482541"
+      },
+      {
+        "file": ".github/skills/nx-import/references/TURBOREPO.md",
+        "hash": "6654032474246573297"
+      },
+      {
+        "file": ".github/skills/nx-import/references/VITE.md",
+        "hash": "5793928500507593678"
+      },
+      {
+        "file": ".github/skills/nx-plugins/SKILL.md",
+        "hash": "4717624081372438208"
+      },
+      {
+        "file": ".github/skills/nx-run-tasks/SKILL.md",
+        "hash": "10723914446406921246"
+      },
+      {
+        "file": ".github/skills/nx-workspace/SKILL.md",
+        "hash": "56694506768298655"
+      },
+      {
+        "file": ".github/skills/nx-workspace/references/AFFECTED.md",
+        "hash": "10577828056523124002"
+      },
+      {
+        "file": ".github/workflows/ci.yml",
+        "hash": "14892114470058394676"
+      },
+      {
+        "file": ".github/workflows/release.yml",
+        "hash": "13884435675840198008"
+      },
+      {
+        "file": ".gitignore",
+        "hash": "6729582715115676339"
+      },
+      {
+        "file": ".nvmrc",
+        "hash": "5508892473988680663"
+      },
+      {
+        "file": ".nxignore",
+        "hash": "5119308225089955863"
+      },
+      {
+        "file": ".opencode/agents/ci-monitor-subagent.md",
+        "hash": "6611362967399008889"
+      },
+      {
+        "file": ".opencode/commands/monitor-ci.md",
+        "hash": "12455117996087874585"
+      },
+      {
+        "file": ".opencode/skills/link-workspace-packages/SKILL.md",
+        "hash": "6638592300654417978"
+      },
+      {
+        "file": ".opencode/skills/monitor-ci/SKILL.md",
+        "hash": "8399173415832764241"
+      },
+      {
+        "file": ".opencode/skills/monitor-ci/references/fix-flows.md",
+        "hash": "14499115380699629375"
+      },
+      {
+        "file": ".opencode/skills/monitor-ci/scripts/ci-poll-decide.mjs",
+        "hash": "5080978990847760627"
+      },
+      {
+        "file": ".opencode/skills/monitor-ci/scripts/ci-state-update.mjs",
+        "hash": "13401974159889364904"
+      },
+      {
+        "file": ".opencode/skills/nx-generate/SKILL.md",
+        "hash": "12149253535688076771"
+      },
+      {
+        "file": ".opencode/skills/nx-import/SKILL.md",
+        "hash": "9709061508228126022"
+      },
+      {
+        "file": ".opencode/skills/nx-import/references/ESLINT.md",
+        "hash": "7412016826831212653"
+      },
+      {
+        "file": ".opencode/skills/nx-import/references/GRADLE.md",
+        "hash": "15868511153961490698"
+      },
+      {
+        "file": ".opencode/skills/nx-import/references/JEST.md",
+        "hash": "8022966628634571060"
+      },
+      {
+        "file": ".opencode/skills/nx-import/references/NEXT.md",
+        "hash": "8705422121624482541"
+      },
+      {
+        "file": ".opencode/skills/nx-import/references/TURBOREPO.md",
+        "hash": "6654032474246573297"
+      },
+      {
+        "file": ".opencode/skills/nx-import/references/VITE.md",
+        "hash": "5793928500507593678"
+      },
+      {
+        "file": ".opencode/skills/nx-plugins/SKILL.md",
+        "hash": "4717624081372438208"
+      },
+      {
+        "file": ".opencode/skills/nx-run-tasks/SKILL.md",
+        "hash": "10723914446406921246"
+      },
+      {
+        "file": ".opencode/skills/nx-workspace/SKILL.md",
+        "hash": "56694506768298655"
+      },
+      {
+        "file": ".opencode/skills/nx-workspace/references/AFFECTED.md",
+        "hash": "10577828056523124002"
+      },
+      {
+        "file": ".prettierignore",
+        "hash": "8178980576928756596"
+      },
+      {
+        "file": ".prettierrc",
+        "hash": "16267754514737964994"
+      },
+      {
+        "file": ".vscode/extensions.json",
+        "hash": "4637156562308165301"
+      },
+      {
+        "file": ".vscode/launch.json",
+        "hash": "3074825945599792484"
+      },
+      {
+        "file": "AGENTS.md",
+        "hash": "18234343250335250711"
+      },
+      {
+        "file": "CHANGELOG.md",
+        "hash": "7338225628889103851"
+      },
+      {
+        "file": "CLAUDE.md",
+        "hash": "18234343250335250711"
+      },
+      {
+        "file": "LICENSE",
+        "hash": "1742713622754055560"
+      },
+      {
+        "file": "PLAN.md",
+        "hash": "18120167838309218910"
+      },
+      {
+        "file": "README.md",
+        "hash": "17290652291577832061"
+      },
+      {
+        "file": "docker/docker-compose.yml",
+        "hash": "9352600161822991417"
+      },
+      {
+        "file": "docker/server.Dockerfile",
+        "hash": "953381179781396469"
+      },
+      {
+        "file": "docker/ui.Dockerfile",
+        "hash": "10801177426747931726"
+      },
+      {
+        "file": "eslint.config.mjs",
+        "hash": "2598624100984631732"
+      },
+      {
+        "file": "jest.config.ts",
+        "hash": "6870352021923392442"
+      },
+      {
+        "file": "jest.preset.js",
+        "hash": "9430166341120122740"
+      },
+      {
+        "file": "nx.json",
+        "hash": "8518066419861221019"
+      },
+      {
+        "file": "opencode.json",
+        "hash": "8969569099983068167"
+      },
+      {
+        "file": "package.json",
+        "hash": "5834177822159951977"
+      },
+      {
+        "file": "packages/.gitkeep",
+        "hash": "3244421341483603138"
+      },
+      {
+        "file": "pnpm-lock.yaml",
+        "hash": "17622918672229048774"
+      },
+      {
+        "file": "pnpm-workspace.yaml",
+        "hash": "7442905964096369597"
+      },
+      {
+        "file": "scripts/e2e/access.mjs",
+        "hash": "13247075837636995744"
+      },
+      {
+        "file": "scripts/e2e/brokers.mjs",
+        "hash": "16780139887551177382"
+      },
+      {
+        "file": "scripts/e2e/cli.mjs",
+        "hash": "14117626700360686858"
+      },
+      {
+        "file": "scripts/e2e/conductor-sdk.mjs",
+        "hash": "861852083149210552"
+      },
+      {
+        "file": "scripts/e2e/controls.mjs",
+        "hash": "14951989422736916999"
+      },
+      {
+        "file": "scripts/e2e/harness.mjs",
+        "hash": "17985958875564488559"
+      },
+      {
+        "file": "scripts/e2e/index.mjs",
+        "hash": "6445904035656680677"
+      },
+      {
+        "file": "scripts/e2e/interfaces.mjs",
+        "hash": "3189392032459697085"
+      },
+      {
+        "file": "scripts/e2e/operations.mjs",
+        "hash": "7864067470059673984"
+      },
+      {
+        "file": "scripts/e2e/operators.mjs",
+        "hash": "14526712327993986309"
+      },
+      {
+        "file": "scripts/e2e/platform.mjs",
+        "hash": "15448366311280063248"
+      },
+      {
+        "file": "scripts/e2e/remaining.mjs",
+        "hash": "17744291507856670701"
+      },
+      {
+        "file": "scripts/e2e/tasks.mjs",
+        "hash": "2671539341796088262"
+      },
+      {
+        "file": "scripts/rename-scope.mjs",
+        "hash": "3551004907857476431"
+      },
+      {
+        "file": "scripts/smoke.mjs",
+        "hash": "3984490808257011503"
+      },
+      {
+        "file": "tsconfig.base.json",
+        "hash": "4236273893792430011"
+      },
+      {
+        "file": "tsconfig.json",
+        "hash": "17139524442821950114"
+      },
+      {
+        "file": "vitest.config.mts",
+        "hash": "3709886141919828621"
+      }
+    ]
+  },
+  "externalNodesHash": "13450699052108777494"
+}

@@ -1,0 +1,104 @@
+---
+title: Licence
+description: What you may and may not do with node-flow, in plain language.
+---
+
+node-flow is **source available**, not open source. The distinction is not
+pedantry — it changes what you are allowed to do, and the terms below are not
+the ones an OSI licence would give you.
+
+The licence itself is [`LICENSE`](https://node-flow.dev) in the repository. This
+page explains it. Where the two differ, the licence governs.
+
+## At a glance
+
+| | |
+|---|---|
+| Read the source | ✅ |
+| Download and copy it | ✅ |
+| Run it for any purpose, including commercially | ✅ |
+| Ship it inside a product you sell, unmodified | ✅ |
+| Redistribute it unmodified — npm, containers, internal mirrors | ✅ |
+| Patch your own deployment, never redistributed | ✅ |
+| Fork it to open a pull request | ✅ |
+| Publish a fork as a separate project | ❌ |
+| Distribute a modified version | ❌ |
+| Sell a modified version | ❌ |
+
+## What this means in practice
+
+### You do not need a commercial licence to use it
+
+Running node-flow in production, for a business, inside a product you charge
+for, or on behalf of your customers, is covered. There is no seat count, no
+revenue threshold and no "contact us" gate on ordinary use.
+
+This is the main way the licence differs from the non-commercial
+source-available licences it otherwise resembles.
+
+### Installing it is redistribution, and that is fine
+
+Pulling `@node-flow-dev/sdk` from npm, pulling a container image, or mirroring
+either into your own registry, all involve copying the software. Redistributing
+it **unmodified and in full** is expressly allowed, so none of that needs
+special permission.
+
+### You may patch your own deployment
+
+If a dependency has a vulnerability, a log line is too noisy, or something is
+broken at 3am, you may change your copy and run it.
+
+What you may not do is let that change leave your organisation — no publishing
+it, no shipping it to customers as a modified build, no offering it as a service
+distinguishable from the unmodified software.
+
+<Callout type="warn">
+  This is not a licence to maintain a private variant indefinitely. A patch you
+  keep and build upon becomes, in substance, the fork the licence prohibits.
+  Send it back instead — see below.
+</Callout>
+
+### Contributing is expressly allowed, forks and all
+
+A pull request requires a fork. The licence permits creating one **solely to
+prepare a contribution** to the official repository, and permits modifying it
+for that purpose.
+
+That permission is scoped to the act of contributing. It ends when the
+contribution is submitted, withdrawn or rejected, and it never covers running
+that fork in production, publishing it as an alternative, or keeping it as an
+independent line of development.
+
+Contributions are licensed to the project under the terms in section 4 of the
+licence. You keep your copyright; the project gets the right to ship what you
+wrote.
+
+### What is prohibited
+
+Publishing your own version. Concretely: a fork presented as a separate project,
+a modified build distributed to anyone, a modified copy sold or supplied for
+value, and removing the copyright or licence notices.
+
+The intent is narrow — improvements to node-flow should come back to node-flow
+rather than becoming somebody else's product.
+
+## Configuration is not modification
+
+Workflow definitions, task definitions, environment variables, secrets,
+connection strings and every other input you supply are **not** modifications.
+Neither is building from unmodified source with the build process the project
+ships.
+
+You can therefore configure node-flow as heavily as you like — including
+workflows that are themselves proprietary and valuable — without the licence
+touching them. Your workflows are yours.
+
+## If you need different terms
+
+Terms beyond these are available by agreement: [node-flow.dev](https://node-flow.dev).
+
+<Callout>
+  **This is a bespoke licence.** No court has interpreted it and no legal team
+  already knows what it means. If your organisation's review process depends on
+  recognising a standard licence, raise it with us early rather than late.
+</Callout>

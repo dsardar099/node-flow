@@ -1,0 +1,388 @@
+---
+title: Architecture
+description: Process topology, the monorepo, how a request becomes an execution, and the data model in outline.
+---
+
+node-flow is Conductor's model — a declarative JSON DAG, language-agnostic
+workers polling a queue, a visual editor where the diagram is the source of
+truth — running on Postgres alone. One NestJS application, role-flagged so its
+components scale independently, with a pure decider at the centre that performs
+no I/O at all.
+
+Four ideas are load-bearing and were built in from the first commit rather than
+retrofitted. Netflix published their Conductor 4.0 rework in September 2026, a
+rewrite driven by exactly the bottlenecks a naive implementation hits, and
+node-flow starts on the far side of those lessons:
+
+- The old engine **loaded the entire running workflow into memory** for each
+  evaluation. Separating definition from execution data, and loading only the
+  tasks an evaluation needs, took max workflow size from about 2,500 to 30,000
+  tasks.
+- **Distributed locking was removed** by storing pending and terminal task state
+  separately and reconciling in the application layer.
+- **Evaluation moved off the synchronous request path** into per-workflow
+  exclusive queues processed sequentially.
+- **Indexing was decoupled from execution**, and large task payloads moved to
+  blob storage.
+
+## Process topology
+
+One image, three roles, selected by `NODE_FLOW_ROLES`.
+
+<Mermaid
+  title="Roles, and what each one owns"
+  chart={`
+flowchart TB
+  W["Workers<br/>any language"] -->|"long-poll lease, heartbeat, report"| API
+  UI["Dashboard<br/>Next.js"] -->|"same-origin proxy"| API
+  subgraph P["One NestJS application, role-flagged"]
+    API["api<br/>Fastify HTTP<br/>holds no background loops"]
+    DEC["decider<br/>drains DecideQueues<br/>4 evaluations at a time"]
+    POL["poller<br/>timers, outbox relay, sweepers,<br/>cron, partitions, system tasks"]
+  end
+  API --> PG
+  DEC --> PG
+  POL --> PG
+  PG[("Postgres 18<br/>state · queues · timers · outbox")]
+`}
+/>
+
+`NODE_FLOW_ROLES=api,decider,poller` in one process is the development shape and
+the right shape for a small install; it is what `docker compose` ships.
+Production splits them.
+
+Each role exists for a reason that is about *interference*, not about tidiness:
+
+- **`api`** holds no loops at all. Request latency should never compete with a
+  partition roll or an outbox drain.
+- **`decider`** drains the evaluation queue. This is the part that scales with
+  workflow throughput, and the measured ceiling today is CPU in one Node
+  process rather than anything in Postgres.
+- **`poller`** runs everything time-driven: deadlines, the outbox relay,
+  abandoned leases, expired semaphore permits, rate-limit window pruning,
+  partition roll-forward, the stuck-workflow sweeper, the cron scheduler, and
+  the in-process system-task runner.
+
+<Callout type="warn">
+  An unknown `NODE_FLOW_ROLES` value **throws** rather than falling back to a
+  default. A typo that silently dropped `decider` would produce a cluster where
+  every workflow starts and none progresses — traced back to a misspelling
+  nobody would think to look for. `parseRoles` in
+  `packages/store/src/lib/engine-runners.ts` refuses it at boot.
+</Callout>
+
+### The runner loop
+
+Every sweeper in `store` exposes one "run a batch" method and no lifecycle.
+`packages/store/src/lib/background-runner.ts` is the single place that turns
+them into loops, and `engine-runners.ts` decides which loops a process holds.
+Four properties, each closing an otherwise-silent failure:
+
+| Property | The failure it prevents |
+|---|---|
+| Passes never overlap | Two relays publishing the same batch turns a slow database into a correctness problem, not just a slow one |
+| A throwing pass does not stop the loop, and the error is **counted** | A background loop surviving its own exceptions is by design; `runner_errors_total` is the only thing that reveals a pass throwing every time |
+| A full batch runs again immediately | After an outage there may be thousands of due timers; sleeping a full interval between fixed-size batches would take hours to drain seconds of work |
+| Intervals are jittered | Replicas started by one rollout otherwise sweep in lockstep forever, converting steady load into a periodic spike on already-contended rows |
+
+## The monorepo
+
+```
+packages/
+  core/       the JSON DSL, zod schemas, statuses, task types, policies — no framework
+  engine/     the decider: decide(blueprint, state) to commands. Pure. No I/O.
+  store/      Kysely repositories, raw-SQL migrations, the evaluator, every runner
+  tasks/      system task executors (HTTP, INLINE, JQ, JDBC, gRPC, AI, ...)
+  server/     the NestJS application — the /v1 API, auth, the role runners
+  sdk/        worker SDK, typed TypeScript workflow builder, HTTP client
+  cli/        `nf` — bootstrap, migrate, run, tail, test, replay, export/import
+  ui/         Next.js + Tailwind + HeroUI dashboard
+  testkit/    simulate() and replay() — workflow unit tests with no server
+  bpmn/       BPMN 2.0 import
+  bench/      `nf-bench`, the load harness
+  docs/       the documentation and landing page (this site)
+  server-e2e/ wire-level assertions against a running server
+```
+
+Tags are what the boundary lint enforces, and each package carries them in the
+`nx.tags` field of its own `package.json`:
+
+<Mermaid
+  title="Dependency directions permitted by the module-boundary rule"
+  chart={`
+flowchart BT
+  subgraph PURE["scope:pure"]
+    CORE["core"]
+    ENGINE["engine"]
+  end
+  subgraph INFRA["scope:infra"]
+    STORE["store"]
+    TASKS["tasks"]
+  end
+  subgraph CLIENT["scope:client"]
+    SDK["sdk"]
+    TESTKIT["testkit"]
+    BPMN["bpmn"]
+  end
+  subgraph APP["scope:app"]
+    SERVER["server"]
+    CLI["cli"]
+    UIP["ui"]
+    BENCH["bench"]
+  end
+  ENGINE --> CORE
+  STORE --> ENGINE
+  TASKS --> STORE
+  SDK --> CORE
+  TESTKIT --> ENGINE
+  SERVER --> TASKS
+  SERVER --> STORE
+  CLI --> STORE
+  UIP --> CORE
+`}
+/>
+
+- **`scope:pure`** may depend only on `scope:pure`, and additionally has
+  `bannedExternalImports` listing `@nestjs/*`, `sequelize`, `pg`, `pg-*`,
+  `umzug`, `next`, `react`, `react-*`, `undici`, `ioredis` and `kafkajs`.
+- **`scope:infra`** may build on pure and on each other, but must not reach up
+  into apps or client tooling.
+- **`scope:client`** ships to users' machines, so it must not carry a database
+  driver. `sdk` is the package this rule is really protecting.
+- **`scope:app`** composes everything.
+
+`cli` is deliberately **not** `scope:client`. `nf bootstrap` and `nf migrate`
+exist precisely to do what the API cannot — create the first credential, and
+change the schema — so they run next to the database by design. It is an
+operator tool, tagged `scope:app`, and the exemption is recorded in
+`eslint.config.mjs` next to the rule so it reads as a decision rather than a
+waiver.
+
+## How a request becomes an execution
+
+Nothing in the request path evaluates a workflow. A start writes a row, enqueues
+an evaluation, and returns; the decider does the rest.
+
+<Mermaid
+  title="From an HTTP start to a worker running a task"
+  chart={`
+sequenceDiagram
+  participant C as Client
+  participant A as api
+  participant DB as Postgres
+  participant D as decider
+  participant W as Worker
+  C->>A: POST /v1/ns/{ns}/executions/{name}
+  A->>DB: quota and admission check, BEFORE the row exists
+  A->>DB: insert WorkflowExecutions + IdempotencyKeys
+  A->>DB: insert DecideQueues, pg_notify
+  A-->>C: 201 with the execution id
+  DB--)D: NOTIFY wakes the loop
+  D->>DB: BEGIN
+  D->>DB: DELETE the DecideQueues claim
+  D->>DB: SELECT the workflow FOR UPDATE
+  D->>DB: read pending frontier + static refs
+  Note over D: decide is pure — no I/O here
+  D->>DB: insert TaskExecutions, TaskQueues, Timers, OutboxEvents
+  D->>DB: COMMIT
+  DB--)W: NOTIFY wakes a parked long-poll
+  W->>A: lease returns the task with a fencing token
+  W->>A: heartbeat, then report the result
+  A->>DB: completeTask, fenced on the token
+  A->>DB: insert DecideQueues, pg_notify
+  DB--)D: next evaluation
+`}
+/>
+
+Three things in that picture are worth stating explicitly.
+
+**The decide-queue claim is deleted before any state is read**, inside the same
+transaction. That ordering is the whole correctness argument for the engine, and
+[Correctness](/docs/contributing/correctness) is about why.
+
+**`NOTIFY` is an optimisation and never a guarantee.** It reaches only the
+connections listening at that instant, so a replica mid-reconnect misses
+everything in the gap. Both the decider's own interval and the worker's poll
+timeout are what make the design correct; treating notify as reliable is how a
+fleet quietly stops picking up work after a network blip. The tests include a
+run with the notifier switched off entirely.
+
+**The notification is issued on the same connection as the insert**, which makes
+it part of the transaction. Postgres holds notifications until commit, so a
+parked worker is never woken for a task a rollback then removes.
+
+### Long-poll, not a shorter interval
+
+Fixed-interval polling forces a choice between latency and load: poll every
+100ms and a thousand idle workers generate ten thousand pointless queries a
+second; poll every five seconds and every task waits up to five seconds to
+start. Parking the request removes the trade-off — an idle worker costs one held
+connection and *no queries at all*, and a task starts within a millisecond of
+being enqueued.
+
+There is one channel for the whole cluster, not one per queue. Channel names are
+global and a busy install has thousands of queues; routing to the right waiter
+happens in process, where it is free. And the subscription is registered
+**before** the queue is read — the same shape as the decider's claim-before-read
+rule. Check first and subscribe second, and a task enqueued in that window
+notifies nobody.
+
+## The server
+
+Controllers stay thin: validate, delegate to a service, map to a DTO. Services
+own orchestration. Repositories in `store/` own all SQL. The decider and pollers
+are not HTTP concerns at all — they are lifecycle runners with their own
+graceful shutdown.
+
+The module layout under `packages/server/src/app/` is one directory per
+concern:
+
+| Module | What it holds |
+|---|---|
+| `config/` | Every environment variable, validated by zod once at boot |
+| `database/` | The pool, migrations at boot, and every `store` repository as a provider |
+| `auth/` | The `Authenticator` chain, the single global guard, token exchange, credential admin |
+| `health/` | Liveness and readiness, deliberately separate |
+| `metadata/` | Workflow and task-definition registration, validation, import/export |
+| `execution/` | Start, read, history, search, and the operator actions |
+| `queue/` | The worker protocol: lease, heartbeat, report, logs |
+| `realtime/` | SSE execution streaming |
+| `runner/` | Ties the background loops to the Nest lifecycle |
+| `conductor/` | The Conductor wire-compatibility layer at `/conductor/api` |
+| `api-gateway/`, `mcp-gateway/` | Workflows exposed as REST routes and as MCP tools |
+
+Some decisions in there constrain future work:
+
+- **Configuration fails the boot, not the request.** A setting whose wrong value
+  is silently survivable gets no default. `DATABASE_URL` and
+  `NODE_FLOW_JWT_SECRET` have none, because a server that quietly starts against
+  `localhost/postgres`, or signs tokens with a fallback secret, is worse than one
+  that refuses to start. All problems are reported at once.
+- **Authorization is default-deny.** The guard is registered through `APP_GUARD`,
+  so a new controller is protected the moment it exists and opting out takes an
+  explicit `@Public()`. Protecting only what is marked protected means every new
+  endpoint is public until someone remembers, and the mistake is the *absence* of
+  a line — invisible in review.
+- **Namespace isolation is enforced twice, for two different reasons.** The guard
+  checks that the `:ns` in the URL is the caller's own namespace, because
+  trusting the URL would let any credential act anywhere by editing a path
+  segment. The repositories filter by namespace *independently*, because a filter
+  applied in a controller is one the next non-HTTP caller bypasses.
+- **Keep the application HTTP-adapter-agnostic.** No `@Res()`, no
+  adapter-shaped middleware in controllers; `main.ts` is the only file that knows
+  Fastify is underneath. An e2e assertion pins the adapter at the wire level, so
+  silently reverting to Express fails a test.
+- **There is no OpenAPI decorator library.** `GET /v1/openapi.json` is assembled
+  at boot by walking Nest's own controller metadata, with schemas generated from
+  the same zod objects the request pipes validate with. A hand-maintained spec is
+  wrong the first time someone forgets, and the failure is invisible — the API
+  works and the document quietly lies.
+
+## The data model, in outline
+
+Ten tables carry the engine; the rest are platform. Full detail, including every
+index that matters and the identifier-quoting trap, is on
+[Data model](/docs/contributing/data-model).
+
+<Mermaid
+  title="The engine tables and how they relate"
+  chart={`
+flowchart TB
+  NS["Namespaces"] --> WD["WorkflowDefinitions<br/>definition + compiled blueprint<br/>immutable per name, version"]
+  NS --> TD["TaskDefinitions<br/>retry, timeout, concurrency policy"]
+  WD -.->|"pinned at start"| WE["WorkflowExecutions<br/>PARTITION BY RANGE startedAt"]
+  WE --> TE["TaskExecutions<br/>PARTITION BY HASH workflowId"]
+  WE --> IK["IdempotencyKeys<br/>deliberately unpartitioned"]
+  TE --> TQ["TaskQueues<br/>PARTITION BY HASH queueName"]
+  WE --> DQ["DecideQueues<br/>one row per pending evaluation"]
+  WE --> TM["Timers<br/>PARTITION BY RANGE fireAt, hourly"]
+  WE --> WEV["WorkflowEvents<br/>append-only history, gap-free seq"]
+  WE --> OB["OutboxEvents<br/>every side effect, with a dead letter"]
+`}
+/>
+
+Two separations do most of the work.
+
+**Blueprint is not execution.** A definition is compiled once at registration
+into a blueprint stored alongside it — a flattened node graph with resolved
+successor edges, plus, for each node, the static set of task refs its input
+expressions could read. Definitions are immutable per `(name, version)`, which
+is why an LRU blueprint cache keyed on that pair never needs invalidating, and
+why an edit can never change what a running execution does.
+
+**An evaluation never loads the whole workflow.** It loads the non-terminal
+frontier, plus exactly the terminal rows the blueprint says its expressions
+reference — an indexed point lookup per ref. Cost is O(refs used), not O(tasks
+in workflow), so a 30,000-task workflow evaluates as cheaply as a five-task one.
+`EvaluationState` in `packages/core/src/lib/execution.ts` has **no**
+`tasks: TaskExecution[]` field, and that omission is structural: making the full
+list unrepresentable means nobody can write code that accidentally depends on
+having it.
+
+## Payload offload
+
+Any input or output over 256 KB is written to blob storage and the row keeps a
+`<scheme>:<key>` ref. A filesystem driver is the default — the reason node-flow
+still needs no object store — with S3 behind the same `BlobStore` interface.
+
+Three decisions carry it:
+
+- **The blob is written before the transaction that references it commits.** The
+  other order would commit a row pointing at a blob that does not exist, which is
+  unrecoverable. This one leaks storage on a rollback, which a garbage collector
+  cleans up. Leaking is the right failure.
+- **Refs carry their scheme**, because they outlive the deployment that wrote
+  them. A cluster that starts on the filesystem and later moves to S3 still has
+  years of `fs:` refs in its history.
+- **The evaluator resolves every payload before the decider sees one**, eagerly
+  and exhaustively. This is the whole risk of offloading: an unresolved ref does
+  not throw — the decider reads it as *absent*, so `${bigTask.output.status}`
+  evaluates to undefined, the workflow takes the default branch, and it reports
+  success.
+
+## The honest ceiling
+
+`@node-flow-dev/bench` drives a **running** server over the ordinary API, so
+every number it prints is one a user with an API key can reproduce. On one
+laptop — Docker Postgres 18, one process holding `api,decider,poller`, 16
+workers, 3-task chains, open-loop pacing:
+
+| Arrivals | Completed | Step turnaround p50 | Queue depth | WAL |
+|---|---|---|---|---|
+| 25/s | 22/s | 16 ms | 1 | 0.74 MB/s |
+| 50/s | 44/s | 114 ms | 2 | 1.09 MB/s |
+| 100/s | 53/s | ~2.0 s | 2 | 1.01 MB/s |
+
+The shape of saturation is the finding. At 100 arrivals/s the system still
+drains every run, but latency grows by two orders of magnitude — and WAL stays
+near 1 MB/s while the task queue never goes above a couple of rows. Nothing is
+queueing in Postgres and nothing is near the WAL wall; the backlog is in the
+decider, inside a single Node event loop that is also serving the API.
+
+That answers several open architecture questions honestly, and the answers
+constrain what is worth building next:
+
+- **Redis would not move this number**, because the thing that is full is not
+  the thing Redis replaces. Token buckets and counters are the right first Redis
+  candidates *if* a real deployment ever shows Postgres contention — losing a
+  token is harmless — but permits that guard state (named semaphores,
+  `concurrentExecLimit`) must stay in Postgres, because their correctness comes
+  from committing in the same transaction as the state they protect.
+- **The partition-ownership decider**, which would replace the `FOR UPDATE` row
+  lock, is gated on a measurement showing lock waits in `pg_stat_activity` as
+  the limiting factor. Building it now would add the most delicate
+  distributed-systems code in the repository to fix a limit nothing has hit, and
+  getting it wrong means two deciders evaluating one workflow — the exact thing
+  the current design makes impossible by construction.
+- **Read replicas** are gated on search traffic measurably competing with the
+  decider for connections, and carry a correctness wrinkle worth stating: replica
+  lag makes read-your-writes fail, so a user who starts a run and immediately
+  opens it can get a 404. That is acceptable only for queries where staleness is
+  obviously fine, and the seam has to be explicit about which.
+
+One inefficiency the same experiment exposed, recorded rather than fixed blind:
+running three decider processes on one machine made throughput *worse* (53 to 47
+workflows/s). `peekBatch` takes an `offset` precisely so replicas can look at
+different parts of the queue, and `runnersForRoles` never passes one — so every
+decider peeks the same fifty rows and races for the same claims. A fair
+measurement of horizontal scaling needs more than one machine.

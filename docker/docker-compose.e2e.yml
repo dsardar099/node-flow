@@ -1,0 +1,44 @@
+# Test-only overrides for `pnpm e2e`. NEVER use this for anything real.
+#
+# The shipped defaults in `docker-compose.yml` are the correct ones: HTTP tasks
+# refuse private addresses, no broker is configured until an operator configures
+# one, and no SQL datasource exists until one is named. Each of those is a
+# control the feature suite needs to exercise, and a control cannot be exercised
+# while it is doing its job — so they are relaxed here, and only here.
+#
+# What this turns off, and why you must not ship it:
+#
+#   NODE_FLOW_HTTP_ALLOW_PRIVATE  disables the SSRF guard. In production this is
+#                                 what stops a user-supplied URL reading your
+#                                 cloud metadata endpoint and handing back the
+#                                 credentials it finds.
+#
+# The broker and datasource entries point at containers the suite starts on
+# loopback ports chosen to avoid colliding with anything you already run:
+#
+#   redis     6399    nats  4232
+#   rabbitmq  5682    kafka 9099   (redpanda)
+#
+# Bring them up first — see `scripts/e2e/` — then:
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.e2e.yml up -d server
+#   KEY=<an admin API key> pnpm e2e
+#
+# Afterwards, put the shipped configuration back:
+#
+#   docker compose -f docker/docker-compose.yml up -d --force-recreate server
+#
+# Without this file the suite still runs; roughly fourteen checks then fail
+# saying which variable they wanted. That is the shipped config behaving
+# correctly, not a regression — an easy half hour to lose to, which is why it
+# is written down here rather than kept on somebody's laptop.
+services:
+  server:
+    environment:
+      NODE_FLOW_HTTP_ALLOW_PRIVATE: 'true'
+      NODE_FLOW_REDIS_CONNECTIONS: '{"default":{"url":"redis://host.docker.internal:6399"}}'
+      NODE_FLOW_NATS_CONNECTIONS: '{"default":{"servers":"nats://host.docker.internal:4232"}}'
+      NODE_FLOW_AMQP_CONNECTIONS: '{"default":{"url":"amqp://guest:guest@host.docker.internal:5682"}}'
+      NODE_FLOW_KAFKA_CLUSTERS: '{"default":{"brokers":["host.docker.internal:9099"]}}'
+      NODE_FLOW_SQL_DATASOURCES: '{"reporting":"postgres://nodeflow:nodeflow@postgres:5432/nodeflow"}'
