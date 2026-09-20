@@ -1,5 +1,11 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { constants, createVerify, createHmac, timingSafeEqual, type KeyObject } from 'node:crypto';
+import {
+  constants,
+  createVerify,
+  createHmac,
+  timingSafeEqual,
+  type KeyObject,
+} from 'node:crypto';
 import { TaskType, type JsonValue } from '@node-flow-dev/core';
 import { describe, expect, it } from 'vitest';
 import type { TaskContext } from './executor.js';
@@ -29,7 +35,8 @@ const run = (input: Record<string, JsonValue>) =>
 
 const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const ec = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-const pem = (key: KeyObject) => String(key.export({ type: 'pkcs8', format: 'pem' }));
+const pem = (key: KeyObject) =>
+  String(key.export({ type: 'pkcs8', format: 'pem' }));
 
 const parts = (token: string) => token.split('.');
 const decode = (segment: string) =>
@@ -47,7 +54,10 @@ describe('minting', () => {
   });
 
   it('produces three base64url segments', async () => {
-    const value = await token({ privateKey: pem(rsa.privateKey), subject: 'a' });
+    const value = await token({
+      privateKey: pem(rsa.privateKey),
+      subject: 'a',
+    });
     expect(parts(value)).toHaveLength(3);
     expect(value).not.toContain('=');
     expect(value).not.toContain('+');
@@ -72,7 +82,9 @@ describe('minting', () => {
   // Seconds, not milliseconds. A millisecond `exp` produces a token that looks
   // valid and is rejected everywhere, dated some 54,000 years out.
   it('expresses time in seconds since the epoch', async () => {
-    const claims = decode(parts(await token({ privateKey: pem(rsa.privateKey) }))[1]);
+    const claims = decode(
+      parts(await token({ privateKey: pem(rsa.privateKey) }))[1],
+    );
     const now = Math.floor(Date.now() / 1000);
 
     expect(claims.iat).toBeGreaterThan(now - 5);
@@ -80,7 +92,10 @@ describe('minting', () => {
   });
 
   it('sets kid when a key id is given', async () => {
-    const value = await token({ privateKey: pem(rsa.privateKey), privateKeyId: 'key-7' });
+    const value = await token({
+      privateKey: pem(rsa.privateKey),
+      privateKeyId: 'key-7',
+    });
     expect(decode(parts(value)[0]).kid).toBe('key-7');
   });
 
@@ -108,13 +123,18 @@ describe('minting', () => {
 
 describe('signatures a real verifier would accept', () => {
   it('RS256 verifies against the public key', async () => {
-    const value = await token({ privateKey: pem(rsa.privateKey), algorithm: 'RS256' });
+    const value = await token({
+      privateKey: pem(rsa.privateKey),
+      algorithm: 'RS256',
+    });
     const [header, payload, signature] = parts(value);
 
     const verifier = createVerify('RSA-SHA256');
     verifier.update(`${header}.${payload}`);
 
-    expect(verifier.verify(rsa.publicKey, Buffer.from(signature, 'base64url'))).toBe(true);
+    expect(
+      verifier.verify(rsa.publicKey, Buffer.from(signature, 'base64url')),
+    ).toBe(true);
   });
 
   /**
@@ -125,19 +145,30 @@ describe('signatures a real verifier would accept', () => {
    * verifier rejects — invisible to any test that only checks the shape.
    */
   it('ES256 is raw r‖s, not DER', async () => {
-    const value = await token({ privateKey: pem(ec.privateKey), algorithm: 'ES256' });
+    const value = await token({
+      privateKey: pem(ec.privateKey),
+      algorithm: 'ES256',
+    });
     const [header, payload, signature] = parts(value);
     const raw = Buffer.from(signature, 'base64url');
 
+    // Raw r‖s for P-256 is always exactly 64 bytes. DER is 69–72 — measured
+    // over 20,000 signatures, never once 64 — so the length alone rules DER
+    // out, and the `ieee-p1363` verification below rules it out again: DER
+    // bytes fed to a raw verifier do not verify. Both are deterministic.
+    //
+    // This used to also assert `raw[0] !== 0x30`, on the reasoning that DER
+    // starts with the SEQUENCE tag. That check was redundant against the two
+    // above, and it failed roughly once in 256 runs for the most boring reason
+    // there is: `r` is a random 256-bit integer, so its first byte is 0x30 as
+    // often as any other value. Measured at 0.34% over 20,000 signatures. It
+    // failed on the v1.0.0 release tag and stopped the publish.
     expect(raw).toHaveLength(64);
-    // DER signatures start with the SEQUENCE tag. If this ever passes, the
-    // encoding regressed.
-    expect(raw[0]).not.toBe(0x30);
 
     const verifier = createVerify('RSA-SHA256');
     verifier.update(`${header}.${payload}`);
     expect(
-      verifier.verify({ key: ec.publicKey, dsaEncoding: 'ieee-p1363' }, raw)
+      verifier.verify({ key: ec.publicKey, dsaEncoding: 'ieee-p1363' }, raw),
     ).toBe(true);
   });
 
@@ -146,7 +177,9 @@ describe('signatures a real verifier would accept', () => {
     const value = await token({ privateKey: secret, algorithm: 'HS256' });
     const [header, payload, signature] = parts(value);
 
-    const expected = createHmac('sha256', secret).update(`${header}.${payload}`).digest();
+    const expected = createHmac('sha256', secret)
+      .update(`${header}.${payload}`)
+      .digest();
     const actual = Buffer.from(signature, 'base64url');
 
     expect(actual.length).toBe(expected.length);
@@ -154,7 +187,10 @@ describe('signatures a real verifier would accept', () => {
   });
 
   it('PS256 verifies with PSS padding', async () => {
-    const value = await token({ privateKey: pem(rsa.privateKey), algorithm: 'PS256' });
+    const value = await token({
+      privateKey: pem(rsa.privateKey),
+      algorithm: 'PS256',
+    });
     const [header, payload, signature] = parts(value);
 
     const verifier = createVerify('RSA-SHA256');
@@ -167,8 +203,8 @@ describe('signatures a real verifier would accept', () => {
           padding: constants.RSA_PKCS1_PSS_PADDING,
           saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
         },
-        Buffer.from(signature, 'base64url')
-      )
+        Buffer.from(signature, 'base64url'),
+      ),
     ).toBe(true);
   });
 });
