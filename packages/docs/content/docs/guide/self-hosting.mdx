@@ -383,7 +383,7 @@ services:
       start_period: 10s
 
   server:
-    image: ghcr.io/OWNER/node-flow/server:1.0.0
+    image: ghcr.io/dsardar099/node-flow/server:1.0.0
     restart: unless-stopped
     depends_on:
       postgres:
@@ -469,7 +469,7 @@ services:
       start_period: 20s
 
   ui:
-    image: ghcr.io/OWNER/node-flow/ui:1.0.0
+    image: ghcr.io/dsardar099/node-flow/ui:1.0.0
     restart: unless-stopped
     depends_on:
       server:
@@ -504,11 +504,11 @@ docker compose logs server | grep -A 10 'created your first administrator'
 ```
 
 <Callout type="info">
-  Replace `OWNER` with the GitHub owner the images were published under. The
-  release workflow publishes `ghcr.io/<repository>/server` and
+  The release workflow publishes `ghcr.io/<repository>/server` and
   `ghcr.io/<repository>/ui`, tagged with the release version and `latest`, for
   `linux/amd64` and `linux/arm64`. Pin the version tag in production; `latest`
-  is for trying it.
+  is for trying it. If you run your own fork, substitute your own owner for
+  `dsardar099` above.
 </Callout>
 
 ### Against a managed Postgres instead
