@@ -202,8 +202,7 @@ curl -s -X POST "$NF_URL/v1/ns/$NF_NAMESPACE/metadata/workflows" \
 <Tab value="nf CLI">
 
 ```bash
-# nf is not on npm in 1.0 — run it from a clone of the repo
-pnpm nf workflows register greet.json
+npx --yes @node-flow-dev/cli@1.0.0 workflows register greet.json
 ```
 
 `nf` reads `NF_URL`, `NF_API_KEY` and `NF_NAMESPACE` from the environment, or

@@ -1,7 +1,6 @@
 {
   "name": "@node-flow-dev/cli",
   "version": "1.0.0",
-  "private": true,
   "description": "nf — deploy, run, tail, test and migrate node-flow from the command line.",
   "license": "LicenseRef-node-flow-1.0",
   "files": [
@@ -52,5 +51,14 @@
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsardar099/node-flow.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://node-flow.dev",
+  "bugs": {
+    "url": "https://github.com/dsardar099/node-flow/issues"
   }
 }

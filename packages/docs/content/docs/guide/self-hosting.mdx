@@ -280,8 +280,8 @@ Then on every server pod:
 <Tab value="From the CLI">
 
 ```bash
-# nf ships inside the server image; it is not on npm in 1.0
-docker run --rm -e DATABASE_URL ghcr.io/dsardar099/node-flow/server:1.0.0 nf migrate
+# nf is on npm; the server image carries the server and nothing else
+npx --yes @node-flow-dev/cli@1.0.0 migrate
 # Applied migrations:
 #   0036-ai
 #   0037-trace-context

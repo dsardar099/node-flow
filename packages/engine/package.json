@@ -38,5 +38,14 @@
   "dependencies": {
     "@node-flow-dev/core": "workspace:*",
     "tslib": "^2.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsardar099/node-flow.git",
+    "directory": "packages/engine"
+  },
+  "homepage": "https://node-flow.dev",
+  "bugs": {
+    "url": "https://github.com/dsardar099/node-flow/issues"
   }
 }

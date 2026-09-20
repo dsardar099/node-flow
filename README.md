@@ -157,7 +157,7 @@ new Worker({
 }).start();
 ```
 
-`@node-flow-dev/core` holds the definition types and zod schemas, and `@node-flow-dev/cli` is the `nf` command. `engine`, `store`, `tasks` and `bpmn` are published because the above depend on them, not because they are an API to build against.
+`@node-flow-dev/core` holds the definition types and zod schemas, and `@node-flow-dev/cli` is the `nf` command. `engine`, `store` and `tasks` are published because the above depend on them, not because they are an API to build against.
 
 ### Scaling
 

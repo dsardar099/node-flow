@@ -38,5 +38,14 @@
   "dependencies": {
     "tslib": "^2.3.0",
     "zod": "^4.6.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsardar099/node-flow.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://node-flow.dev",
+  "bugs": {
+    "url": "https://github.com/dsardar099/node-flow/issues"
   }
 }

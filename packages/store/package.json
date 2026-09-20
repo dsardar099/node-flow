@@ -1,7 +1,6 @@
 {
   "name": "@node-flow-dev/store",
   "version": "1.0.0",
-  "private": true,
   "description": "Repositories, migrations and the Postgres-backed queue. All SQL lives here.",
   "license": "LicenseRef-node-flow-1.0",
   "files": [
@@ -89,5 +88,14 @@
     "nats": {
       "optional": true
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsardar099/node-flow.git",
+    "directory": "packages/store"
+  },
+  "homepage": "https://node-flow.dev",
+  "bugs": {
+    "url": "https://github.com/dsardar099/node-flow/issues"
   }
 }

@@ -96,7 +96,7 @@ Tags live in each package's own `package.json`, under `nx.tags`:
 | `scope:pure` | `core`, `engine` | May depend only on `scope:pure`, plus the banned-import list above |
 | `scope:infra` | `store`, `tasks` | May build on pure and on each other; must not reach up into apps or client tooling |
 | `scope:client` | `sdk`, `testkit`, `bpmn` | Ships to users' machines, so no database driver — `sequelize`, `pg`, `pg-*`, `umzug` are banned |
-| `scope:app` | `server`, `cli`, `ui`, `bench`, `docs`, `server-e2e` | Composes everything |
+| `scope:app` | `server`, `cli`, `ui`, `bench`, `docs` | Composes everything |
 
 `cli` is deliberately **not** `scope:client`, and the exemption is recorded in
 the config next to the rule so it reads as a decision rather than a waiver.

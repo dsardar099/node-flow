@@ -44,6 +44,8 @@ process depends on recognising a standard licence, raise it early.
 
 `docker compose up` is the whole installation. The server seeds a namespace and an administrator on a database that has none, so there is no bootstrap command and no `DATABASE_URL` to export before the first run; further namespaces, users, groups and keys are created from the dashboard.
 
+Seven packages publish to npm under `@node-flow-dev`. Two are the ones to reach for — `sdk` for workers, the API client and the typed builder, `testkit` for unit-testing workflows with no server — and `cli` is `nf`, installable with `npx --yes @node-flow-dev/cli@1.0.0`. The other four (`core`, `engine`, `store`, `tasks`) publish because those three depend on them, not because they are an API to build against. The container images carry the server and the dashboard, and nothing else: `nf` is not inside them, deliberately, because a production artefact is not a toolbox.
+
 The seed deliberately does **not** ship a fixed password. Left unset, `NODE_FLOW_SEED_PASSWORD` makes the server generate 160 bits per install and print them once at boot, so no two deployments share a credential — the compose file pins a known one only so the quickstart is copy-pasteable. `NODE_FLOW_SEED=false` turns it off entirely.
 
 ### Documentation

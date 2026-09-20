@@ -45,7 +45,7 @@ Verification performed by deleting `node_modules`, every `dist/`, all `*.tsbuild
 |---|---|
 | Workspace | Nx 23.2 + pnpm 11.5.1, created via `create-nx-workspace --preset=ts` |
 | Runtime | Node 24.19.0 (`.nvmrc`), TypeScript 6.0.3 |
-| Projects | `core` `engine` `store` `queue` `tasks` `sdk` `cli` `testkit` (libs) · `server` (NestJS) · `ui` (Next.js) · `server-e2e` |
+| Projects | `core` `engine` `store` `queue` `tasks` `sdk` `cli` `testkit` (libs) · `server` (NestJS) · `ui` (Next.js) |
 | Boundaries | `scope:pure` · `scope:infra` · `scope:client` · `scope:app`, enforced by `@nx/enforce-module-boundaries` |
 | Database | Postgres 18.6 via `docker compose`, healthy in ~6s |
 | Checks | `build` · `test` · `lint` · `typecheck` all green across every project |
@@ -1977,7 +1977,7 @@ The guarantee only holds when **both** things are true:
 1. pnpm's isolated `nodeLinker` (never `hoisted`, never `shamefully-hoist`), **and**
 2. **every runtime dependency declared in the package that uses it, never at the root.**
 
-The workspace root now carries dev tooling only; `@nestjs/*` lives in `server`, `next`/`react` in `ui` and `docs`, `axios` in `server-e2e`. With that in place an undeclared import fails at resolution — verified with a probe file that produced `TS2307: Cannot find module '@nestjs/common'` and a `require.resolve` throw. **Keep the root `dependencies` block empty.** Adding a runtime dependency there silently disables this protection for the entire workspace.
+The workspace root now carries dev tooling only; `@nestjs/*` lives in `server`, `next`/`react` in `ui` and `docs`. With that in place an undeclared import fails at resolution — verified with a probe file that produced `TS2307: Cannot find module '@nestjs/common'` and a `require.resolve` throw. **Keep the root `dependencies` block empty.** Adding a runtime dependency there silently disables this protection for the entire workspace.
 
 > This has already been broken once, by a generator rather than by a person:
 > `nx g @nx/next:application` adds `next`, `react` and `react-dom` to the root
@@ -2724,6 +2724,28 @@ The lesson is narrower than "test more" and worth stating exactly: **a
 compatibility layer has to be tested against the other side's output, not
 against a hand-written approximation of it.** Every one of these is a field or a
 header the SDK always produces and the suite never did.
+
+---
+
+## Release engineering — what the pipeline found
+
+The release pipeline is itself an artefact that had never been run, and running
+it found four defects in one afternoon. All four share a shape: **a step that
+only executes on the real release cannot be covered by the rehearsal of it.**
+
+| Found by | Defect | Fix |
+|---|---|---|
+| The first CI run | `server-e2e:e2e` failed. The package was untouched Phase 0 scaffold: its `globalSetup` waited for a server on `:3000` that nothing starts, and its one test asserted `GET /v1` returns `{message:'Hello API'}` when that route 404s. It had never passed, because local runs used `build test lint typecheck` and CI runs `lint test build typecheck e2e` — a target nobody had ever invoked | Deleted the package, and with it the last consumer of jest. The one assertion worth keeping — that the app is served by **Fastify** and not Express, observable on the wire only as the `keep-alive: timeout=N` response header — moved into `scripts/smoke.mjs`, where it runs against the built image instead of a server nobody started |
+| The next CI run | The image build died on `COPY packages/server-e2e/package.json`. Both Dockerfiles carry a hand-written list of every workspace manifest, copied in before `pnpm install` so the install layer caches on dependency changes rather than source changes. Nothing tells you when that list stops matching the workspace: deleting a package fails the build minutes in, on a change that had nothing to do with Docker, and *adding* one fails nothing at all — it silently omits the package from the install | `release-manifests.spec.ts` compares the two lists and names the offending package in a unit test |
+| Reading the manifests | `@node-flow-dev/cli` was `private: true` while the docs gave three `npx @node-flow-dev/cli@1.0.0` recipes — including the Kubernetes migration Job, which is the *only* documented way to migrate an install running `DATABASE_MIGRATE_ON_BOOT=false` | Published `cli`, and with it `store` and `tasks`, which it needs. The same spec now fails on any published package that depends on an unpublished one — a manifest with `workspace:*` rewritten to a version that does not exist installs as a 404, in the registry, where it cannot be taken back |
+| Running the image | The docs answered the same question two incompatible ways, and **both were wrong**. Two pages said "`nf` is not on npm — it ships inside the server image" and gave a `docker run … server:1.0.0 nf migrate`; three others already used `npx @node-flow-dev/cli@1.0.0`. The image carries only the bundled server, so `nf` resolves against `CMD ["node", …]` and dies with `Cannot find module '/app/nf'` — while the npx form 404'd because the package was private. A contradiction that visible survived because nobody had run either | Publishing the CLI settles it toward npm: all five recipes now use `npx`, and the callout says plainly that the image carries the server and nothing else. The image is unchanged — a production artefact is not a toolbox |
+| Reading the workflow | `pnpm -r publish --provenance` would have failed on every package: provenance refuses to sign a package with no `repository` field, and not one of them had it. The dry run cannot catch this, because `dry_run` swaps the publish for `npm pack` | Added `repository`, `homepage` and `bugs` to all seven, and a check that every published package carries `repository.url` and the right `repository.directory` |
+
+The dry run is worth keeping despite the last two: it caught nothing here, but
+it is the only thing that proves the image build, the smoke gate and the pack
+step work before a tag makes them irreversible. What it cannot do is exercise
+the steps it exists to skip, so those need tests of their own — which is what
+the spec above now is.
 
 ---
 

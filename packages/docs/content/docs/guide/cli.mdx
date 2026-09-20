@@ -4,21 +4,27 @@ description: Every command, with examples — registering definitions, running a
 ---
 
 ```bash
+npx --yes @node-flow-dev/cli@1.0.0 help
+```
+
+Or from a clone, which is what the contributor docs assume:
+
+```bash
 git clone https://github.com/dsardar099/node-flow.git
 cd node-flow && pnpm install
 pnpm nf help
 ```
 
 <Callout>
-  **`nf` is not on npm in 1.0.** It reaches deeper into the engine than the
-  published packages do — `migrate` and `bootstrap` talk to Postgres directly —
-  so its surface is not yet one worth committing to as a public API. Run it from
-  a clone, or from the container:
+  **`nf` is not in the server image.** That image carries the bundled server and
+  nothing else, deliberately — it is the thing that runs in production, and a
+  toolbox is not. Reach for `npx` above, including inside a cluster: the
+  Kubernetes migration Job below does exactly that.
 
-  ```bash
-  docker run --rm -e NF_URL -e NF_API_KEY \
-    ghcr.io/dsardar099/node-flow/server:1.0.0 nf workflows list
-  ```
+  Installing it pulls `@node-flow-dev/store` and `@node-flow-dev/tasks` with it,
+  because `migrate` and `bootstrap` talk to Postgres directly rather than
+  through the API. It is a heavier install than `@node-flow-dev/sdk` for that
+  reason.
 </Callout>
 
 ## How it connects

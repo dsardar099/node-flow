@@ -1,7 +1,6 @@
 {
   "name": "@node-flow-dev/tasks",
   "version": "1.0.0",
-  "private": true,
   "description": "System task implementations — HTTP, INLINE, JQ, gRPC, SQL, webhooks and the AI tasks.",
   "license": "LicenseRef-node-flow-1.0",
   "files": [
@@ -65,5 +64,14 @@
     "nodemailer": {
       "optional": true
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsardar099/node-flow.git",
+    "directory": "packages/tasks"
+  },
+  "homepage": "https://node-flow.dev",
+  "bugs": {
+    "url": "https://github.com/dsardar099/node-flow/issues"
   }
 }

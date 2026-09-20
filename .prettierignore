@@ -4,3 +4,15 @@
 /.nx/cache
 /.nx/workspace-data
 .nx/self-healing
+
+# Prose is written and reviewed by hand. Prettier's markdown printer pads every
+# table cell to the width of its column, rewrites `*emphasis*` as `_emphasis_`
+# and reflows paragraphs — so a one-line edit to PLAN.md came out as a
+# 1,175-line diff, and every other markdown file in the repo was the same.
+#
+# None of it had ever been formatted, which made the whole class invisible:
+# `nx format:check --base` only looks at files a change touches, so markdown
+# passed CI by never being edited. The first documentation change to land would
+# have failed the build for reasons having nothing to do with the change.
+*.md
+*.mdx

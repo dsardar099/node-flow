@@ -24,7 +24,6 @@ COPY packages/testkit/package.json packages/testkit/
 COPY packages/bpmn/package.json packages/bpmn/
 COPY packages/bench/package.json packages/bench/
 COPY packages/ui/package.json packages/ui/
-COPY packages/server-e2e/package.json packages/server-e2e/
 # The docs site (including the landing page) is deployed separately — but the
 # lockfile describes the whole workspace, so `--frozen-lockfile`
 # fails unless every member manifest exists. Copied, then excluded by --filter.
