@@ -21,13 +21,132 @@ image the release pipeline ships.
 
 ### Bring up Postgres, the engine and the dashboard
 
-From a checkout of the repository:
+<Tabs items={['Published images', 'From a checkout']}>
+
+<Tab value="Published images">
+
+No clone and no build. Docker pulls the released images from the GitHub
+Container Registry. Save this as `docker-compose.yml` in an empty directory:
+
+```yaml title="docker-compose.yml"
+# node-flow, from the published images — no clone, no build.
+#
+# Every secret below is a public development value, fine on a laptop and
+# nowhere else. For a real install see /docs/guide/self-hosting.
+name: node-flow
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: node-flow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nodeflow
+      POSTGRES_PASSWORD: nodeflow
+      POSTGRES_DB: nodeflow
+      POSTGRES_INITDB_ARGS: '--locale-provider=icu --icu-locale=en-US --encoding=UTF8'
+    ports:
+      # 5433, not 5432, so a Postgres you already run keeps its port.
+      - '${NODE_FLOW_POSTGRES_PORT:-5433}:5432'
+    volumes:
+      # Postgres 18 wants one mount at /var/lib/postgresql, not .../data.
+      - postgres-data:/var/lib/postgresql
+    command:
+      - postgres
+      - -c
+      - autovacuum_vacuum_scale_factor=0.02
+      - -c
+      - autovacuum_naptime=10s
+      - -c
+      - io_method=worker
+      - -c
+      - max_connections=200
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U nodeflow -d nodeflow']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # The engine: API, decider and poller in one container.
+  server:
+    image: ghcr.io/dsardar099/node-flow/server:1.0.0
+    container_name: node-flow-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://nodeflow:nodeflow@postgres:5432/nodeflow
+      NODE_FLOW_ROLES: api,decider,poller
+      NODE_FLOW_JWT_SECRET: development-secret-change-me-at-least-32-chars
+      NODE_FLOW_SECRET_KEYS: 'dev:bm9kZS1mbG93LWRldmVsb3BtZW50LWtleS1ub3Qtc2U='
+      # The first administrator, created on first boot. Leave the password
+      # unset anywhere real and one is generated and printed once instead.
+      NODE_FLOW_SEED_EMAIL: you@example.com
+      NODE_FLOW_SEED_PASSWORD: development-password
+      PORT: 3000
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://localhost:3000/v1/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # The dashboard. It calls the API server-side, so the browser only ever
+  # talks to one origin.
+  ui:
+    image: ghcr.io/dsardar099/node-flow/ui:1.0.0
+    container_name: node-flow-ui
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      NODE_FLOW_API_URL: http://server:3000
+      NODE_FLOW_UI_NAMESPACE: default
+      PORT: 3100
+    ports:
+      - '3100:3100'
+
+volumes:
+  postgres-data:
+```
+
+Then:
 
 ```bash
+docker compose up -d
+docker compose ps        # all three should report "healthy" or "Up"
+```
+
+The first run pulls about a minute's worth of images; later starts take
+seconds. The images are multi-architecture, so this works as-is on Intel and
+Apple Silicon.
+
+</Tab>
+
+<Tab value="From a checkout">
+
+If you are working on node-flow itself, run the compose file in the repository,
+which builds the images from your working tree:
+
+```bash
+git clone https://github.com/dsardar099/node-flow.git
+cd node-flow
 docker compose -f docker/docker-compose.yml up
 ```
 
-That starts three containers:
+It sets the same ports and the same development credentials as the other tab,
+so everything below works identically.
+
+</Tab>
+
+</Tabs>
+
+Either way, that starts three containers:
 
 <Files>
   <Folder name="node-flow (compose project)" defaultOpen>
@@ -42,7 +161,13 @@ keeps its port. Set `NODE_FLOW_POSTGRES_PORT` to move it. Nothing inside the
 compose network is affected either way — the services reach each other on 5432
 over the bridge.
 
-If you only want the published images and not this repository, see
+To start again from nothing, `docker compose down -v` removes the containers
+and the database volume; the next `up` seeds a fresh install. To move to a newer
+release, change the two `:1.0.0` tags and run `docker compose up -d` again —
+migrations apply on boot.
+
+This file is for trying node-flow. For an install you keep — your own secrets,
+a generated admin password, a managed Postgres — use
 [Self-hosting → Docker Compose without this codebase](/docs/guide/self-hosting#docker-compose-without-this-codebase).
 
 </Step>
@@ -58,8 +183,8 @@ email     you@example.com
 password  development-password
 ```
 
-Those credentials come from `docker/docker-compose.yml` and exist to make this
-page copy-pasteable:
+Those credentials come from the compose file — either one — and exist to make
+this page copy-pasteable:
 
 ```yaml
 NODE_FLOW_SEED_EMAIL: you@example.com
