@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { comparisons, landingFaq } from '../lib/landing-content';
 
 function Icon({ name = 'arrow', ...props }: { name?: string; className?: string }) {
   const paths: Record<string, string> = {
@@ -141,10 +142,10 @@ export function LandingPage() {
     <header className="nf-header">
       <nav className="nf-container flex h-[72px] items-center justify-between gap-5" aria-label="Main navigation">
         <Link href="/" aria-label="Node Flow documentation home" className="nf-brand"><Brand priority /><span>DOCUMENTATION</span></Link>
-        <div className="nf-desktop-nav flex items-center gap-8"><a href="#how-it-works">How it works</a><Link href="/docs/guide">Documentation</Link><Link href="/api-reference">API reference</Link><GitHubLink /></div>
+        <div className="nf-desktop-nav flex items-center gap-8"><a href="#how-it-works">How it works</a><Link href="/docs/guide">Documentation</Link><Link href="/docs/alternatives">Compare</Link><Link href="/api-reference">API reference</Link><GitHubLink /></div>
         <div className="flex items-center gap-3"><button type="button" className="nf-motion" onClick={() => setPaused(!paused)} disabled={reduced} aria-pressed={stopped} aria-label={reduced ? 'Animations disabled by your system preference' : paused ? 'Resume animations' : 'Pause animations'} title={stopped ? 'Motion paused' : 'Pause motion'}><Icon name={stopped ? 'play' : 'pause'} /></button><Link href="/docs/guide/quickstart" className="nf-button nf-button-small">Start building <Icon /></Link><button className="nf-menu-toggle" aria-label="Toggle navigation" aria-expanded={menu} aria-controls="mobile-navigation" onClick={() => setMenu(!menu)}><Icon name="menu" /></button></div>
       </nav>
-      {menu && <nav id="mobile-navigation" className="nf-mobile-nav" aria-label="Mobile navigation"><a href="#how-it-works" onClick={() => setMenu(false)}>How it works</a><Link href="/docs/guide">Documentation</Link><Link href="/api-reference">API reference</Link><GitHubLink /></nav>}
+      {menu && <nav id="mobile-navigation" className="nf-mobile-nav" aria-label="Mobile navigation"><a href="#how-it-works" onClick={() => setMenu(false)}>How it works</a><Link href="/docs/guide">Documentation</Link><Link href="/docs/alternatives">Compare</Link><Link href="/api-reference">API reference</Link><GitHubLink /></nav>}
     </header>
 
     <main id="main-content" tabIndex={-1}>
@@ -153,7 +154,7 @@ export function LandingPage() {
         <div className="nf-container nf-hero-content">
           <a className="nf-announcement nf-enter" href="/docs/contributing/architecture"><span className="nf-status-dot" /> Source available. Built on Postgres. <Icon /></a>
           <h1 className="nf-enter" style={{ '--entry': '90ms' } as CSSProperties}>Complex workflows.<br /><span>Beautifully orchestrated.</span></h1>
-          <p className="nf-enter nf-hero-description" style={{ '--entry': '180ms' } as CSSProperties}>Turn distributed work into a flow you can follow.<br className="nf-desktop-break" /> Durable execution, workers in any language, and just one dependency.</p>
+          <p className="nf-enter nf-hero-description" style={{ '--entry': '180ms' } as CSSProperties}>A self-hosted workflow orchestration engine that runs on Postgres alone.<br className="nf-desktop-break" /> Durable workflows, workers in any language, and just one dependency.</p>
           <div className="nf-hero-actions nf-enter" style={{ '--entry': '270ms' } as CSSProperties}><Link href="/docs/guide/quickstart" className="nf-button">Build your first workflow <Icon /></Link><Link className="nf-button nf-button-quiet" href="/docs/guide"><Icon name="book" /> Read the documentation</Link></div>
           <div className="nf-hero-facts nf-enter" style={{ '--entry': '360ms' } as CSSProperties}><span><Icon name="check" /> Source available</span><span><Icon name="check" /> Self-hostable</span><span><Icon name="check" /> Postgres-powered</span></div>
         </div>
@@ -210,6 +211,10 @@ export function LandingPage() {
 
       <section className="nf-container nf-section nf-docs-section" id="documentation"><div className="nf-docs-heading" data-reveal><div><span className="nf-eyebrow">THE NEXT STEP IS YOURS</span><h2>Built for builders.<br /><span>Documented for humans.</span></h2></div><Link href="/docs/guide" className="nf-text-link">All documentation <Icon /></Link></div><div className="nf-docs-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">{docs.map((item, i) => <Link key={item.title} href={item.href} className="nf-doc-card" data-reveal style={{ '--reveal-delay': `${i * 70}ms` } as CSSProperties}><span className="nf-doc-icon"><Icon name={item.icon} /></span><h3>{item.title}</h3><p>{item.text}</p><span className="nf-doc-link">{item.label}<Icon /></span></Link>)}</div></section>
 
+      <section className="nf-container nf-section nf-docs-section" id="compare" aria-labelledby="compare-heading"><div className="nf-docs-heading" data-reveal><div><span className="nf-eyebrow">04 / HOW IT COMPARES</span><h2 id="compare-heading">A Conductor, Temporal and<br /><span>Trigger.dev alternative.</span></h2></div><Link href="/docs/alternatives" className="nf-text-link">All comparisons <Icon /></Link></div><div className="nf-docs-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">{comparisons.map((item, i) => <Link key={item.href} href={item.href} className="nf-doc-card" data-reveal style={{ '--reveal-delay': `${(i % 4) * 70}ms` } as CSSProperties}><span className="nf-doc-icon"><Icon name="refresh" /></span><h3>{item.name === 'Open-source engines' ? 'Open-source workflow engines' : `${item.name} alternative`}</h3><p>{item.text}</p><span className="nf-doc-link">node-flow vs {item.name}<Icon /></span></Link>)}</div></section>
+
+      <section className="nf-container nf-section nf-docs-section nf-faq" id="faq" aria-labelledby="faq-heading"><div className="nf-docs-heading" data-reveal><div><span className="nf-eyebrow">05 / QUESTIONS</span><h2 id="faq-heading">Frequently asked.<br /><span>Plainly answered.</span></h2></div></div><div className="nf-faq-list">{landingFaq.map(item => <details key={item.question} className="nf-faq-item" data-reveal><summary><h3>{item.question}</h3></summary><p>{item.answer}</p></details>)}</div></section>
+
       <section className="nf-final"><div className="nf-final-rings" aria-hidden="true"><i /><i /><i /></div><div className="nf-container" data-reveal><span className="nf-eyebrow">YOUR INFRASTRUCTURE. YOUR RULES.</span><h2>Let it flow.</h2><p>Your next workflow starts with a single step.</p><Link className="nf-button" href="/docs/guide/quickstart">Start building with Node Flow <Icon /></Link></div></section>
       <section className="nf-container nf-maker" aria-labelledby="maker-heading">
         <div className="nf-maker-card" data-reveal>
@@ -231,6 +236,6 @@ export function LandingPage() {
         </div>
       </section>
     </main>
-    <footer className="nf-container nf-footer"><Link href="/" aria-label="Node Flow home"><Brand /></Link><p>Source available. Free to run, including commercially. Built to keep work moving.</p><nav aria-label="Footer navigation"><Link href="/docs/guide">Docs</Link><Link href="/api-reference">API</Link><Link href="/docs/contributing">Contribute</Link><GitHubLink /></nav></footer>
+    <footer className="nf-container nf-footer"><Link href="/" aria-label="Node Flow home"><Brand /></Link><p>Source available. Free to run, including commercially. Built to keep work moving.</p><nav aria-label="Footer navigation"><Link href="/docs/guide">Docs</Link><Link href="/docs/alternatives">Compare</Link><Link href="/api-reference">API</Link><Link href="/docs/contributing">Contribute</Link><GitHubLink /></nav></footer>
   </div>;
 }

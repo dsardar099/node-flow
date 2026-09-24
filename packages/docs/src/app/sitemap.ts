@@ -25,7 +25,20 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...source.getPages().map((page) => ({
       url: absoluteUrl(page.url),
       changeFrequency: 'weekly' as const,
-      priority: 0.8,
+      priority: PRIORITY[page.slugs[0] ?? ''] ?? 0.7,
     })),
   ];
 }
+
+/**
+ * How much each section matters relative to the rest of the site.
+ *
+ * The guide and the comparison pages are what someone searching for a
+ * workflow engine should land on; the contributor docs are for people already
+ * inside the project.
+ */
+const PRIORITY: Record<string, number> = {
+  guide: 0.8,
+  alternatives: 0.9,
+  contributing: 0.5,
+};

@@ -1,0 +1,46 @@
+---
+title: "Restate alternative: node-flow vs Restate"
+description: node-flow vs Restate — JSON-defined orchestration with polling workers in any language, compared with Restate's durable handlers and virtual objects.
+---
+
+**node-flow is a Restate alternative when you want orchestration rather than
+durable RPC.** Restate is a durable-execution server: your services register
+handlers, Restate proxies calls to them and journals each step so a handler
+resumes where it stopped. node-flow keeps the process as a JSON DAG and leases
+each step to a worker — the engine, not a handler, owns control flow.
+
+## node-flow vs Restate at a glance
+
+| | node-flow | Restate |
+|---|---|---|
+| Workflow is… | A JSON DAG | Code in durable handlers, workflows and virtual objects |
+| How work reaches your code | Workers poll and lease | Restate pushes invocations to your service |
+| Languages | Any, over HTTP | Languages with a Restate SDK |
+| Storage | PostgreSQL 18 — queryable with SQL, backed up like any database | Restate's own embedded log and state store |
+| Visual DAG, editor and operator actions | Yes | Run inspection in Restate's UI and CLI |
+| Human approvals | `HUMAN` task with inbox | Awakeables / durable promises plus your own UI |
+| Conductor API | Yes | No |
+
+## Choose which
+
+**Choose Restate** for low-latency durable RPC between services you own —
+exactly-once-style handlers, keyed virtual objects, sagas written as code.
+
+**Choose node-flow** when the process should be a readable, versioned
+document; when steps are run by many teams' workers in many languages; and when
+you want all state in a Postgres database your team already knows how to run.
+
+<FAQ
+  items={[
+    {
+      question: 'How is node-flow different from Restate?',
+      answer:
+        'Restate makes service handlers durable by journaling their steps. node-flow is an orchestrator: a JSON workflow definition drives execution, and workers in any language poll for the steps they own. All state lives in PostgreSQL.',
+    },
+  ]}
+/>
+
+## Next
+
+- [What node-flow is](/docs/guide)
+- [Temporal alternative](/docs/alternatives/temporal)

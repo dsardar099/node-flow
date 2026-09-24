@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
-import { JsonLd, siteGraph } from '../components/json-ld';
+import { JsonLd, faqGraph, siteGraph } from '../components/json-ld';
 import { LandingPage } from '../components/landing';
+import { landingFaq } from '../lib/landing-content';
 import { pageMetadata } from '../lib/metadata';
 import { site } from '../lib/site';
 import './landing.css';
@@ -19,6 +20,7 @@ export default function Home() {
   return (
     <>
       <JsonLd data={siteGraph} />
+      <JsonLd data={faqGraph(landingFaq)} />
       <LandingPage />
     </>
   );

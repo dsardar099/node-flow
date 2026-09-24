@@ -1,0 +1,49 @@
+---
+title: "Hatchet alternative: node-flow vs Hatchet"
+description: node-flow vs Hatchet — two Postgres-backed engines; node-flow defines workflows as JSON DAGs with a Conductor-compatible API, Hatchet defines them in code.
+---
+
+**node-flow and [Hatchet](https://hatchet.run) share a bet: Postgres is
+enough.** Both avoid a separate broker and use PostgreSQL for durable state and
+queueing. They differ in where the workflow lives. Hatchet workflows — tasks,
+DAGs and durable tasks — are declared in code with its Python, TypeScript or Go
+SDKs. node-flow workflows are JSON documents the engine reads, and workers in
+any language poll for their steps.
+
+## node-flow vs Hatchet at a glance
+
+| | node-flow | Hatchet |
+|---|---|---|
+| Workflow is… | A JSON DAG | Code (tasks, DAGs, durable tasks) |
+| Languages | Any, over HTTP | Languages with a Hatchet SDK |
+| Worker connection | HTTP long-poll | Persistent connection to the engine |
+| Infrastructure | PostgreSQL 18 | Postgres, plus the Hatchet engine |
+| Operators | `SWITCH`, `FORK_JOIN`, `DO_WHILE`, `SUB_WORKFLOW`, `DYNAMIC`, saga compensation | Expressed in code |
+| Built-in system tasks | HTTP, SQL, gRPC, jq, sandboxed JS, LLM, MCP, email, webhooks — no worker needed | Tasks run in your workers |
+| Human approvals | `HUMAN` task with inbox | Durable events plus your own UI |
+| Conductor API | Yes | No |
+| Managed offering | Self-hosted | Hatchet Cloud |
+
+## Choose which
+
+**Choose Hatchet** for a code-first, high-throughput task queue with fan-out,
+concurrency keys and durable tasks inside services you control.
+
+**Choose node-flow** when the definition itself should be data — reviewable,
+diffable, editable in a visual editor, importable from BPMN — and when
+non-engineers need to see and act on runs.
+
+<FAQ
+  items={[
+    {
+      question: 'Are node-flow and Hatchet both built on Postgres?',
+      answer:
+        'Yes. Both use PostgreSQL for durable state and queueing. node-flow’s only required dependency is PostgreSQL 18, which also holds its timers, transactional outbox and search.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Self-hosting](/docs/guide/self-hosting)
+- [Open-source workflow engines](/docs/alternatives/open-source-workflow-engines)

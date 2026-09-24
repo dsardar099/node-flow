@@ -1,5 +1,6 @@
 import { defineDocs } from 'fumadocs-mdx/macro';
 import { loader } from 'fumadocs-core/source';
+import { absoluteUrl } from './site';
 
 /**
  * The content tree.
@@ -22,7 +23,14 @@ import { loader } from 'fumadocs-core/source';
  * people — someone running node-flow, and someone changing it — and the only
  * thing they share is the site they live on.
  */
-const docs = defineDocs({ dir: 'content/docs' });
+const docs = defineDocs({
+  dir: 'content/docs',
+  // Compiles a Markdown rendering of every page into the bundle, for
+  // `llms.txt`, `llms-full.txt` and the per-page `.md` routes. Built in rather
+  // than read from disk at request time, because the deployed image does not
+  // necessarily carry `content/`.
+  docs: { postprocess: { includeProcessedMarkdown: true } },
+});
 
 export const source = loader({
   baseUrl: '/docs',
@@ -50,6 +58,7 @@ export function pageImage(page: Page) {
 const SECTIONS: Record<string, string> = {
   guide: 'Guide',
   contributing: 'Contributing',
+  alternatives: 'Compare',
 };
 
 /**
@@ -61,4 +70,46 @@ const SECTIONS: Record<string, string> = {
  */
 export function sectionOf(page: Page): string {
   return SECTIONS[page.slugs[0] ?? ''] ?? 'Documentation';
+}
+
+/**
+ * Where a page's Markdown twin lives: the page URL with `.md` appended.
+ *
+ * `next.config.mjs` rewrites that onto `app/llms.mdx/[[...slug]]`, which is
+ * what serves it. A section index maps to `/docs/guide.md`, not
+ * `/docs/guide/index.md`, so the rule stays "append `.md`".
+ */
+export function markdownUrl(page: Page) {
+  return `${page.url}.md`;
+}
+
+/** A page as Markdown, headed by its title and description. */
+export async function markdownOf(page: Page) {
+  const body = toPlainMarkdown(await page.data.getText('processed'));
+  const lines = [`# ${page.data.title}`, ''];
+  if (page.data.description) lines.push(`> ${page.data.description}`, '');
+  lines.push(`Source: ${absoluteUrl(page.url)}`, '', body.trim(), '');
+  return lines.join('\n');
+}
+
+/**
+ * Undo the two things the processed Markdown keeps that only make sense to
+ * the site itself: the `[#slug]` anchor ids on headings, and `<FAQ>` blocks,
+ * which stay as JSX. The FAQ is often the most quotable part of a page, so it
+ * is rewritten as headings and paragraphs rather than dropped.
+ */
+function toPlainMarkdown(markdown: string) {
+  return markdown
+    .replace(/^(#{1,6} .*?) \[#[^\]]+\]$/gm, '$1')
+    .replace(/<FAQ\s+items="([\s\S]*?)"\s*\/>/g, (_, items: string) => {
+      const pairs = [
+        ...items.matchAll(
+          /question:\s*'((?:[^'\\]|\\.)*)',\s*answer:\s*'((?:[^'\\]|\\.)*)'/g,
+        ),
+      ];
+      return [
+        '## Frequently asked questions',
+        ...pairs.map(([, question, answer]) => `### ${question}\n\n${answer}`),
+      ].join('\n\n');
+    });
 }

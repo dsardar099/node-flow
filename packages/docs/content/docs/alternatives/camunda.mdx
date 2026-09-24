@@ -1,0 +1,53 @@
+---
+title: "Camunda alternative: node-flow vs Camunda"
+description: node-flow vs Camunda — import BPMN 2.0 into a lightweight, developer-first JSON workflow engine that runs on Postgres and is free to run commercially.
+---
+
+**node-flow is a lightweight Camunda alternative for developer-owned
+processes.** Camunda executes BPMN — the process diagram *is* the program — and
+is built for organisations where business analysts model processes. node-flow
+executes a JSON DAG, keeps the diagram-first spirit with a visual editor, and
+can **import BPMN 2.0** to give you a draft definition to start from.
+
+## Why people look for a Camunda alternative
+
+- **Licensing.** Camunda 8's self-managed production use requires a commercial
+  licence under Camunda's current terms. node-flow is free to run in
+  production, including commercially.
+- **Footprint.** A Camunda 8 installation is a set of components (the Zeebe
+  engine, Operate, Tasklist, identity, a search store). node-flow is one image
+  on PostgreSQL 18.
+- **JSON in version control.** A node-flow definition diffs cleanly in a pull
+  request and needs no modeller to edit.
+
+## node-flow vs Camunda at a glance
+
+| | node-flow | Camunda 8 |
+|---|---|---|
+| Process language | JSON DAG; BPMN 2.0 import to a draft | BPMN 2.0 and DMN |
+| Workers | Any language, HTTP long-poll | Job workers via Camunda clients |
+| Human tasks | `HUMAN` task and inbox | Tasklist and forms |
+| Business rules | `BUSINESS_RULE` system task | DMN |
+| Infrastructure | PostgreSQL 18 | Several platform components and a search store |
+| Price | Free to run | Commercial for self-managed production; SaaS plans |
+
+## When Camunda is the better choice
+
+Choose Camunda when business analysts own process models in BPMN and DMN,
+when you need BPMN's full event and compensation semantics exactly, or when
+your organisation standardises on it.
+
+<FAQ
+  items={[
+    {
+      question: 'Can node-flow import BPMN?',
+      answer:
+        'Yes. POST a BPMN 2.0 XML document to the import-bpmn endpoint and node-flow converts it into a draft workflow definition for you to review and register. It is a starting point, not a BPMN runtime.',
+    },
+  ]}
+/>
+
+## Next
+
+- [API](/docs/guide/api)
+- [Workflows](/docs/guide/workflows)

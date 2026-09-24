@@ -1,0 +1,73 @@
+---
+title: Open-source workflow orchestrators compared
+description: A practical guide to open-source and source-available workflow orchestration engines — Conductor OSS, Temporal, Airflow, Trigger.dev, Hatchet and node-flow — and how to choose.
+---
+
+If you searched for an **open-source workflow orchestrator**, you probably
+want three things: to read the code, to self-host it, and not to pay per
+execution. This page lays out the main options by licence and model, including
+where node-flow fits — and why it is *source available* rather than open source.
+
+## node-flow's licence, stated up front
+
+node-flow is **source available**, not OSI open source. You can read the source,
+run it for any purpose (including commercially and inside products you sell),
+redistribute it unmodified, and patch your own deployment. You cannot publish
+a fork or distribute a modified build. Your workflow definitions are yours and
+untouched by the licence. Details are on the [Licence](/docs/guide/licence) page.
+
+If your organisation requires an OSI-approved licence, pick one of the
+open-source engines below.
+
+## The options
+
+| Engine | Licence | Model | Required infrastructure |
+|---|---|---|---|
+| **node-flow** | Source available, free to run | JSON DAG, polyglot polling workers | PostgreSQL 18 |
+| Conductor OSS | Apache 2.0 | JSON DAG, polyglot polling workers | JVM server plus queue, persistence and index stores |
+| Temporal | MIT | Durable code | Temporal services plus a SQL or Cassandra store |
+| Apache Airflow | Apache 2.0 | Python DAGs, scheduled | Scheduler, metadata DB, executor |
+| Trigger.dev | Apache 2.0 | TypeScript tasks | Webapp, Postgres, Redis, object storage, registry |
+| Hatchet | MIT | Code-defined tasks and DAGs | Engine plus Postgres |
+| Camunda 7 Community | Apache 2.0 (end of life for community) | BPMN | JVM plus a SQL database |
+
+Licences change — several projects in this space have moved between licences
+in recent years. Check each project's repository before you commit.
+
+## How to choose
+
+1. **Is the workflow code or data?** If it lives in one team's service and is
+   genuinely code, look at Temporal, Hatchet or Trigger.dev. If it is a process
+   several teams and an operator need to see and change, look at Conductor OSS
+   or node-flow.
+2. **What will you operate?** Count the stateful systems. node-flow and Hatchet
+   lean on Postgres; Temporal and Conductor OSS add more.
+3. **Which languages?** Polling-worker engines work with anything that speaks
+   HTTP; SDK-based engines work with the languages they ship SDKs for.
+4. **Batch or per-event?** Scheduled data pipelines belong in Airflow.
+   Per-event business processes belong in an orchestrator.
+
+<FAQ
+  items={[
+    {
+      question: 'Is node-flow open source?',
+      answer:
+        'node-flow is source available, not OSI open source. The full source is public, and you may run it for free for any purpose, including commercially, and redistribute it unmodified. Distributing modified versions or publishing a fork as a separate project is not permitted.',
+    },
+    {
+      question: 'What is the best open-source alternative to Conductor or Temporal?',
+      answer:
+        'Conductor OSS (Apache 2.0) keeps the JSON workflow model; Temporal itself is MIT-licensed for code-first durable execution. If you do not need an OSI licence and want Conductor’s model with only Postgres to run, node-flow is free to self-host and run commercially.',
+    },
+    {
+      question: 'Which workflow engines run only on Postgres?',
+      answer:
+        'node-flow requires only PostgreSQL 18 for state, queues, timers, the outbox and search. Hatchet is also Postgres-based. Most other orchestrators add Redis, Cassandra, Elasticsearch or a message broker.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Workflow engine alternatives compared](/docs/alternatives)
+- [Quickstart](/docs/guide/quickstart)

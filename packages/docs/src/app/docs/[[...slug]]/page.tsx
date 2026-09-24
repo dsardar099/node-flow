@@ -6,7 +6,12 @@ import {
   DocsPage,
   DocsTitle,
 } from 'fumadocs-ui/page';
-import { pageImage, sectionOf, source } from '../../../lib/source';
+import {
+  markdownUrl,
+  pageImage,
+  sectionOf,
+  source,
+} from '../../../lib/source';
 import { pageMetadata } from '../../../lib/metadata';
 import { site } from '../../../lib/site';
 import { JsonLd, docGraph } from '../../../components/json-ld';
@@ -61,5 +66,6 @@ export async function generateMetadata(props: {
     path: page.url,
     image: pageImage(page).url,
     type: 'article',
+    markdown: markdownUrl(page),
   });
 }

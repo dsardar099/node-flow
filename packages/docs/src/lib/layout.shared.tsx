@@ -21,6 +21,7 @@ export function baseOptions(): BaseLayoutProps {
     },
     links: [
       { text: 'Guide', url: '/docs/guide', active: 'nested-url' },
+      { text: 'Compare', url: '/docs/alternatives', active: 'nested-url' },
       { text: 'Contributing', url: '/docs/contributing', active: 'nested-url' },
       { text: 'API', url: '/api-reference', active: 'nested-url' },
     ],

@@ -1,0 +1,90 @@
+---
+title: "Temporal alternative: node-flow vs Temporal"
+description: node-flow vs Temporal — JSON workflows and polyglot workers instead of deterministic workflow code, on Postgres alone instead of a Temporal cluster.
+---
+
+**node-flow is a Temporal alternative for processes that cross teams, services
+and languages.** Temporal makes *code* durable: your workflow is a function
+that the SDK replays from an event history. node-flow orchestrates a *document*:
+the workflow is a JSON DAG the engine reads, and your code only ever
+implements one step. The two answer different questions, and it is worth being
+honest about which one you have.
+
+## Why people look for a Temporal alternative
+
+- **Determinism rules.** Temporal workflow code must be deterministic — no
+  direct clock, randomness, network or unversioned logic changes — because it
+  is replayed. node-flow workers are ordinary code with no such rules; the
+  engine is the only deterministic part, and it is ours to keep that way.
+- **Versioning in-flight workflows.** Changing Temporal workflow code while
+  runs are in flight needs patching or worker versioning. A node-flow
+  definition is versioned data: running executions keep the version they
+  started with.
+- **Running the cluster.** Self-hosted Temporal is a set of services (frontend,
+  history, matching, worker) over Cassandra, MySQL or PostgreSQL, with
+  Elasticsearch commonly added for advanced visibility. node-flow is one image
+  on one Postgres database.
+- **People who are not the workflow's author.** In node-flow an operator can
+  open a run in the dashboard, see the DAG, retry a step, rerun from a task or
+  terminate — without reading the code that defined it.
+
+## node-flow vs Temporal at a glance
+
+| | node-flow | Temporal |
+|---|---|---|
+| Workflow is… | A JSON DAG (data) | Code in a Temporal SDK |
+| Determinism constraints on your code | None | Workflow code must be deterministic |
+| Worker languages | Any — workers are HTTP clients; generated Python, Go, Java, TypeScript clients | Languages with an official SDK |
+| Worker runtime | None; poll, do the work, report | SDK workflow runtime in your process |
+| Infrastructure | PostgreSQL 18 | Temporal services + Cassandra/MySQL/PostgreSQL, optional Elasticsearch |
+| Long waits and timers | One row per wait, no worker held | Durable timers |
+| Human approvals | First-class `HUMAN` task and inbox | Built from signals and your own UI |
+| Visual editing | DAG editor in the dashboard | Not applicable — workflows are code |
+| Testing | `testkit` runs a definition with no server | SDK test environments with time skipping |
+| Conductor compatibility | Yes | No |
+| Managed offering | Self-hosted | Temporal Cloud |
+| Licence | Source available, free to run commercially | MIT |
+
+## When Temporal is the better choice
+
+Choose Temporal when the workflow lives inside **one team's service, in one
+language**, and is genuinely code: complex state, rich types, loops whose logic
+would be painful to express as JSON. Temporal's model is excellent at that, its
+ecosystem is large, and Temporal Cloud removes the operational cost.
+
+## Using both
+
+They are not mutually exclusive. A common shape is node-flow owning the
+cross-team process — the one operators look at — and calling a Temporal
+workflow as a single `SIMPLE` step inside it.
+
+<FAQ
+  items={[
+    {
+      question: 'What is a simpler alternative to Temporal?',
+      answer:
+        'node-flow is simpler to run and to reason about when your workflow can be expressed as a DAG: it needs only PostgreSQL, workflows are JSON you can read and diff, and workers are plain HTTP clients with no determinism rules. For logic that is truly code, Temporal remains the stronger tool.',
+    },
+    {
+      question: 'Does node-flow have determinism constraints like Temporal?',
+      answer:
+        'Not for your code. Workers can call clocks, random numbers and networks freely. Determinism lives inside node-flow’s engine, a pure decide function, which is what lets it replay a recorded run against a definition.',
+    },
+    {
+      question: 'Can node-flow run long-running workflows like Temporal?',
+      answer:
+        'Yes. Runs survive restarts and deploys, WAIT and HUMAN tasks can last days or weeks at the cost of one database row, and retries, timeouts and compensation are defined per task.',
+    },
+    {
+      question: 'Does node-flow need Cassandra or Elasticsearch?',
+      answer:
+        'No. PostgreSQL 18 holds state, queues, timers, the outbox and search. It is the only infrastructure dependency.',
+    },
+  ]}
+/>
+
+## Next
+
+- [What node-flow is](/docs/guide) — the model, and when not to use it.
+- [Workflows](/docs/guide/workflows) — the JSON DSL.
+- [Workers](/docs/guide/workers) — writing one in any language.
