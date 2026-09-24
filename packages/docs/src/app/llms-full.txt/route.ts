@@ -15,15 +15,15 @@ const ORDER = ['guide', 'alternatives', 'contributing'];
 
 export async function GET() {
   const pages = [...source.getPages()].sort(
-    (a, b) =>
-      rank(a.slugs[0]) - rank(b.slugs[0]) || a.url.localeCompare(b.url),
+    (a, b) => rank(a.slugs[0]) - rank(b.slugs[0]) || a.url.localeCompare(b.url),
   );
   const texts = await Promise.all(pages.map(markdownOf));
 
   return new Response(
-    [`# ${site.displayName} documentation\n\n> ${site.description}\n`, ...texts].join(
-      '\n---\n\n',
-    ),
+    [
+      `# ${site.displayName} documentation\n\n> ${site.description}\n`,
+      ...texts,
+    ].join('\n---\n\n'),
     { headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
   );
 }

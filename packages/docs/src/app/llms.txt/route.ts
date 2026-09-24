@@ -30,7 +30,9 @@ export function GET() {
 
   const sections = ['guide', 'alternatives', 'contributing']
     .filter((key) => groups.has(key))
-    .map((key) => `## ${SECTION_TITLES[key]}\n\n${groups.get(key)!.join('\n')}`);
+    .map(
+      (key) => `## ${SECTION_TITLES[key]}\n\n${groups.get(key)!.join('\n')}`,
+    );
 
   const body = `# ${site.displayName}
 

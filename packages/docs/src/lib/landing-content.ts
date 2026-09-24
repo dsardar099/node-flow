@@ -9,14 +9,46 @@ import type { FaqItem } from '../components/json-ld';
  */
 
 export const comparisons = [
-  { name: 'Netflix Conductor', href: '/docs/alternatives/conductor', text: 'Same JSON model and a compatible API — without Redis or Elasticsearch.' },
-  { name: 'Orkes Conductor', href: '/docs/alternatives/orkes', text: 'RBAC, SSO and AI tasks, self-hosted and free to run commercially.' },
-  { name: 'Temporal', href: '/docs/alternatives/temporal', text: 'Workflows as readable data, workers without determinism rules.' },
-  { name: 'Trigger.dev', href: '/docs/alternatives/trigger-dev', text: 'Workers in any language, running on compute you already have.' },
-  { name: 'Inngest', href: '/docs/alternatives/inngest', text: 'Pull-based workers and server-side flow control on Postgres.' },
-  { name: 'iii', href: '/docs/alternatives/iii', text: 'A focused orchestrator for the services you already run.' },
-  { name: 'AWS Step Functions', href: '/docs/alternatives/aws-step-functions', text: 'JSON workflows anywhere, with no per-transition bill.' },
-  { name: 'Open-source engines', href: '/docs/alternatives/open-source-workflow-engines', text: 'Conductor OSS, Temporal, Airflow, Hatchet and more, side by side.' },
+  {
+    name: 'Netflix Conductor',
+    href: '/docs/alternatives/conductor',
+    text: 'Same JSON model and a compatible API — without Redis or Elasticsearch.',
+  },
+  {
+    name: 'Orkes Conductor',
+    href: '/docs/alternatives/orkes',
+    text: 'RBAC, SSO and AI tasks, self-hosted and free to run commercially.',
+  },
+  {
+    name: 'Temporal',
+    href: '/docs/alternatives/temporal',
+    text: 'Workflows as readable data, workers without determinism rules.',
+  },
+  {
+    name: 'Trigger.dev',
+    href: '/docs/alternatives/trigger-dev',
+    text: 'Workers in any language, running on compute you already have.',
+  },
+  {
+    name: 'Inngest',
+    href: '/docs/alternatives/inngest',
+    text: 'Pull-based workers and server-side flow control on Postgres.',
+  },
+  {
+    name: 'iii',
+    href: '/docs/alternatives/iii',
+    text: 'A focused orchestrator for the services you already run.',
+  },
+  {
+    name: 'AWS Step Functions',
+    href: '/docs/alternatives/aws-step-functions',
+    text: 'JSON workflows anywhere, with no per-transition bill.',
+  },
+  {
+    name: 'Open-source engines',
+    href: '/docs/alternatives/open-source-workflow-engines',
+    text: 'Conductor OSS, Temporal, Airflow, Hatchet and more, side by side.',
+  },
 ] as const;
 
 export const landingFaq: FaqItem[] = [

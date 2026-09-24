@@ -14,9 +14,7 @@ const nextConfig = {
    * so the address an agent quotes is the one it fetched.
    */
   async rewrites() {
-    return [
-      { source: '/docs/:path*.md', destination: '/llms.mdx/:path*' },
-    ];
+    return [{ source: '/docs/:path*.md', destination: '/llms.mdx/:path*' }];
   },
 };
 

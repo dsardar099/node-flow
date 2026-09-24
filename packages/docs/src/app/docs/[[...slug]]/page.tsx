@@ -6,12 +6,7 @@ import {
   DocsPage,
   DocsTitle,
 } from 'fumadocs-ui/page';
-import {
-  markdownUrl,
-  pageImage,
-  sectionOf,
-  source,
-} from '../../../lib/source';
+import { markdownUrl, pageImage, sectionOf, source } from '../../../lib/source';
 import { pageMetadata } from '../../../lib/metadata';
 import { site } from '../../../lib/site';
 import { JsonLd, docGraph } from '../../../components/json-ld';
