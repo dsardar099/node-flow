@@ -1,0 +1,61 @@
+---
+title: "Inngest alternative: node-flow vs Inngest"
+description: node-flow vs Inngest — a self-hosted JSON workflow orchestrator with polling workers in any language, as an alternative to event-driven step functions.
+---
+
+**node-flow is an Inngest alternative for workflows that should be data, not
+code.** Inngest runs *step functions*: event-triggered functions in your app,
+written with its SDK, where each `step.run` is checkpointed and the function is
+re-invoked over HTTP to continue. node-flow holds the workflow itself as a JSON
+DAG, and workers — any language, no SDK required — poll for the steps they own.
+
+## Why people look for an Inngest alternative
+
+- **The workflow should outlive one codebase.** When a process spans several
+  services and teams, a JSON definition registered with the orchestrator is a
+  shared artefact; a function inside one app is not.
+- **Pull, not push.** Inngest calls your endpoints. node-flow workers poll and
+  lease, so they can sit behind a firewall with no inbound route, and
+  concurrency caps and rate limits are enforced at dequeue on the server.
+- **One dependency to self-host.** node-flow is one image on PostgreSQL 18.
+- **Operators, not just developers.** Retry a step, rerun from a task,
+  terminate, bulk actions and a human-task inbox are in the dashboard.
+
+## node-flow vs Inngest at a glance
+
+| | node-flow | Inngest |
+|---|---|---|
+| Workflow is… | A JSON DAG | A function using the Inngest SDK |
+| Execution | Workers poll and lease tasks | Inngest invokes your function over HTTP per step |
+| Languages | Any, over HTTP | Languages with an Inngest SDK |
+| Triggers | API, cron, signed webhooks, Kafka/NATS/AMQP/SQS/Redis Streams events | Events, cron, webhooks |
+| Flow control | Concurrency, rate limits, semaphores enforced server-side at dequeue | Concurrency, throttling, debounce, priority |
+| Human approvals | `HUMAN` task with inbox | `waitForEvent` plus your own UI |
+| Self-hosting | PostgreSQL 18 | Inngest server with its own stores |
+| Managed offering | Self-hosted | Inngest Cloud |
+
+## When Inngest is the better choice
+
+Choose Inngest when your workflows live inside one application, you like
+defining them next to the code that runs them, and you want event-driven
+features such as debounce and batching with a managed service behind them.
+
+<FAQ
+  items={[
+    {
+      question: 'What is a self-hosted alternative to Inngest?',
+      answer:
+        'node-flow is a self-hosted workflow orchestrator that runs on PostgreSQL alone. Workflows are JSON DAGs, workers poll for tasks in any language, and triggers include cron, signed webhooks and message-broker events.',
+    },
+    {
+      question: 'Do node-flow workers need a public endpoint?',
+      answer:
+        'No. Workers make outbound HTTP requests to lease tasks, send heartbeats and report results, so they can run in private networks with no inbound traffic.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Execution controls](/docs/guide/execution-controls)
+- [Workers](/docs/guide/workers)

@@ -1,0 +1,55 @@
+---
+title: "iii.dev alternative: node-flow vs iii (Motia)"
+description: node-flow vs iii (iii.dev, formerly Motia) — a Postgres-backed workflow orchestrator with JSON workflows, compared with iii's workers, triggers and functions runtime.
+---
+
+**node-flow is an alternative to [iii](https://iii.dev) for teams that want a
+workflow orchestrator rather than a backend runtime.** iii — from the team
+behind Motia, which it succeeds — is a Rust engine that unifies a backend around
+three primitives: *workers*, *triggers* and *functions*, with SDKs for Node.js,
+Python and Rust. node-flow does one narrower thing: it runs durable,
+long-lived workflows described as JSON, and hands each step to a worker.
+
+## node-flow vs iii at a glance
+
+| | node-flow | iii |
+|---|---|---|
+| Scope | Workflow orchestration | Backend runtime: APIs, queues, cron, state, streams, workflows |
+| Workflow is… | A JSON DAG, versioned and visual | Functions wired together by triggers, in code |
+| Languages | Any, over HTTP | Languages with an iii SDK |
+| Engine | Node.js, pure deterministic decide function | Rust engine |
+| Storage | PostgreSQL 18 | See iii's documentation |
+| Operator tooling | DAG view and editor, retry, rerun-from-task, terminate, human-task inbox | iii console and observability |
+| Access control | Namespaces, RBAC, SSO, audit log | See iii's documentation |
+| Conductor API | Yes | No |
+
+## Choose which
+
+**Choose iii** if you want one runtime to replace your web framework, queue,
+scheduler and background jobs, and are happy for your backend to be built
+around its primitives.
+
+**Choose node-flow** if you already have services, want to keep them as they
+are, and need something to coordinate long-running processes across them —
+with retries, compensation, human approvals and an audit trail an operator can
+follow.
+
+<FAQ
+  items={[
+    {
+      question: 'What is iii.dev?',
+      answer:
+        'iii is an open-source backend runtime from Motia LLC, built around three primitives — workers, triggers and functions — with a Rust engine and SDKs for Node.js, Python and Rust. It succeeds the Motia framework.',
+    },
+    {
+      question: 'Is node-flow a replacement for Motia or iii?',
+      answer:
+        'For workflow orchestration, yes: node-flow runs durable JSON workflows whose steps are executed by workers in any language, on PostgreSQL alone. It does not try to be a web framework or general backend runtime.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Quickstart](/docs/guide/quickstart)
+- [Workflows](/docs/guide/workflows)

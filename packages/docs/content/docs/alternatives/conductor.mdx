@@ -1,0 +1,101 @@
+---
+title: "Netflix Conductor alternative: node-flow vs Conductor"
+description: node-flow vs Netflix Conductor and Conductor OSS — the same JSON workflow model and a Conductor-compatible API, with Postgres as the only dependency.
+---
+
+**node-flow is a Netflix Conductor alternative that keeps Conductor's model and
+drops its infrastructure.** Workflows are the same kind of JSON DAG, workers
+still poll for `SIMPLE` tasks in any language, and a Conductor-shaped REST API
+at `/conductor/api` lets supported Conductor clients connect with a base-URL
+change. What goes away is the stack: node-flow runs on PostgreSQL alone.
+
+## Why people look for a Conductor alternative
+
+- **Netflix stopped maintaining Conductor.** Netflix announced the end of its
+  maintenance of the original repository in December 2023; the community fork
+  continues as [Conductor OSS](https://github.com/conductor-oss/conductor),
+  with Orkes as its main steward.
+- **The footprint.** A production Conductor deployment is a JVM server plus
+  separate queue, persistence and indexing backends — typically Redis and
+  Elasticsearch or OpenSearch, alongside a database, depending on which modules
+  you choose. Each is a system to size, patch, back up and page on.
+- **Node.js and TypeScript teams.** Conductor is a Java/Spring application. If
+  your team, tooling and on-call knowledge are Node, running and extending it
+  is a context switch.
+
+## node-flow vs Conductor at a glance
+
+| | node-flow | Netflix Conductor / Conductor OSS |
+|---|---|---|
+| Workflow model | JSON DAG | JSON DAG |
+| Workers | Any language, HTTP long-poll | Any language, HTTP poll |
+| Server | Node.js, one image with three roles (`api`, `decider`, `poller`) | Java / Spring Boot |
+| Required infrastructure | **PostgreSQL 18 only** — state, queues, timers, outbox and search | Queue, persistence and index stores (commonly Redis + Elasticsearch/OpenSearch) |
+| Conductor API | Compatible layer at `/conductor/api` for supported endpoints | Native |
+| Side effects | Transactional outbox — no side effect escapes a transaction | Depends on the backend combination |
+| Engine | Pure `decide(blueprint, state)` function; deterministic replay | Imperative decider service |
+| Testing | `@node-flow-dev/testkit` runs a whole workflow in milliseconds, no server | Integration tests against a running server |
+| Access control | Namespaces, RBAC, SSO (OIDC, SAML), API keys, service accounts, audit log | Minimal in OSS; richer in Orkes' commercial product |
+| AI tasks | LLM, embeddings, vector search in Postgres, MCP, durable `AGENT` loop | Available in Orkes' product |
+| Licence | Source available, free to run commercially | Apache 2.0 |
+
+## Migrating from Conductor
+
+Because the model is the same, a migration is mostly configuration:
+
+1. Point your Conductor SDK's base URL at `https://your-host/conductor` (or
+   `/conductor/api`, depending on the SDK — see
+   [Conductor compatibility](/docs/guide/conductor#connection-settings)).
+2. Create node-flow credentials for your publishers and workers. The credential
+   selects the namespace.
+3. Register your existing workflow and task definitions. Supported task types
+   keep their names: `SIMPLE`, `SWITCH`, `FORK_JOIN`, `JOIN`, `DO_WHILE`,
+   `SUB_WORKFLOW`, `HTTP`, `INLINE`, `JSON_JQ_TRANSFORM`, `WAIT`, `HUMAN`,
+   `TERMINATE` and more.
+4. Run workers unchanged, then move them over one queue at a time.
+
+<Callout type="warn">
+  The compatibility layer is **not full Conductor or Orkes parity**. Read
+  [Migration boundaries](/docs/guide/conductor#migration-boundaries) before
+  switching a production fleet.
+</Callout>
+
+## When to stay on Conductor
+
+- You depend on a Conductor module, task type or SDK feature outside
+  node-flow's compatibility surface.
+- You need an OSI-approved licence. Conductor OSS is Apache 2.0; node-flow is
+  [source available](/docs/guide/licence).
+- Your platform team already runs Conductor's backends well and the footprint
+  is not a cost you feel.
+
+<FAQ
+  items={[
+    {
+      question: 'Is Netflix Conductor still maintained?',
+      answer:
+        'Netflix ended its own maintenance of the original Conductor repository in December 2023. Development continues in the community fork, Conductor OSS, and in Orkes’ commercial product. node-flow is an independent engine that implements the same model and a compatible API.',
+    },
+    {
+      question: 'Can I use my existing Conductor SDK with node-flow?',
+      answer:
+        'Yes, for the supported workflow and worker endpoints. node-flow serves a Conductor-shaped REST API at /conductor/api; you change the base URL and use a node-flow credential. It is a compatibility layer, not full platform parity, so review the migration boundaries first.',
+    },
+    {
+      question: 'Does node-flow need Redis or Elasticsearch like Conductor?',
+      answer:
+        'No. node-flow keeps workflow state, task queues, timers, the outbox and search in PostgreSQL 18. There is no Redis, Cassandra, Elasticsearch or Kafka to run.',
+    },
+    {
+      question: 'Is node-flow a fork of Conductor?',
+      answer:
+        'No. node-flow is a separate implementation written in TypeScript for Node.js. It follows Conductor’s workflow model and speaks a compatible API, but shares no code with it.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Quickstart](/docs/guide/quickstart) — a completed run in about a minute.
+- [Conductor compatibility](/docs/guide/conductor) — connection settings, credentials and boundaries.
+- [Orkes Conductor alternative](/docs/alternatives/orkes).

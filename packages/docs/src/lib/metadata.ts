@@ -14,6 +14,12 @@ interface PageMetadata {
   image: string;
   /** `article` for documentation, `website` for the landing page. */
   type?: 'website' | 'article';
+  /**
+   * The same page as plain Markdown, for LLM crawlers and agents. Advertised
+   * as a `<link rel="alternate" type="text/markdown">` so they need not
+   * scrape the rendered HTML.
+   */
+  markdown?: string;
   /** Replace the templated `<title>` outright instead of suffixing the site name. */
   absoluteTitle?: boolean;
 }
@@ -39,6 +45,7 @@ export function pageMetadata({
   image,
   type = 'website',
   absoluteTitle = false,
+  markdown,
 }: PageMetadata): Metadata {
   // Previews show the site name alongside a page title, so `Quickstart` alone
   // would read as an orphan in a feed. The landing page's title already
@@ -51,7 +58,10 @@ export function pageMetadata({
   return {
     title: absoluteTitle ? { absolute: title } : title,
     description,
-    alternates: { canonical: path },
+    alternates: {
+      canonical: path,
+      ...(markdown ? { types: { 'text/markdown': markdown } } : {}),
+    },
     openGraph: {
       type,
       siteName: site.displayName,

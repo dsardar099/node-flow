@@ -1,0 +1,100 @@
+---
+title: Workflow engine alternatives compared
+description: How node-flow compares with Conductor, Orkes, Temporal, Trigger.dev, Inngest, Restate, iii, Hatchet, Step Functions, Airflow and Camunda — and when to pick each.
+---
+
+Choosing a workflow orchestrator is mostly choosing a **model**. Once the model
+is right, the rest — languages, hosting, pricing — narrows quickly. These pages
+compare node-flow with the engines people most often evaluate it against, and
+say plainly when the other tool is the better fit.
+
+## The short version
+
+node-flow is a **self-hosted workflow orchestration engine** in the Netflix
+Conductor tradition: a workflow is a JSON DAG, workers in any language poll for
+the steps they own, and the engine owns retries, timeouts, compensation, waits
+and human approvals. Its one infrastructure dependency is **PostgreSQL**.
+
+| | Workflow is… | Runs on | Workers in | Self-host footprint |
+|---|---|---|---|---|
+| **node-flow** | JSON DAG (data) | Your infrastructure | Any language, plain HTTP | Postgres only |
+| [Netflix Conductor / Conductor OSS](/docs/alternatives/conductor) | JSON DAG (data) | Your infrastructure | Any language | JVM server plus queue, persistence and index stores |
+| [Orkes Conductor](/docs/alternatives/orkes) | JSON DAG (data) | Orkes Cloud or enterprise install | Any language | Managed, or a commercial self-hosted install |
+| [Temporal](/docs/alternatives/temporal) | Code (deterministic functions) | Temporal Cloud or self-hosted | Languages with a Temporal SDK | Server cluster plus a SQL or Cassandra store, optional Elasticsearch |
+| [Trigger.dev](/docs/alternatives/trigger-dev) | TypeScript code | Trigger.dev Cloud or self-hosted | TypeScript | Webapp, Postgres, Redis, object storage, registry |
+| [Inngest](/docs/alternatives/inngest) | Code (step functions) | Inngest Cloud or self-hosted | Languages with an Inngest SDK | Inngest server and its stores |
+| [Restate](/docs/alternatives/restate) | Code (durable handlers) | Restate Cloud or self-hosted | Languages with a Restate SDK | Restate server |
+| [iii](/docs/alternatives/iii) | Code (functions + triggers) | Self-hosted engine | Languages with an iii SDK | iii engine |
+| [Hatchet](/docs/alternatives/hatchet) | Code (tasks and DAGs) | Hatchet Cloud or self-hosted | Languages with a Hatchet SDK | Hatchet engine plus Postgres |
+| [AWS Step Functions](/docs/alternatives/aws-step-functions) | JSON state machine | AWS only | Lambda, AWS services, activity workers | None — fully managed |
+| [Apache Airflow](/docs/alternatives/airflow) | Python DAG | Your infrastructure or a managed service | Python operators | Scheduler, metadata DB, executor |
+| [Camunda](/docs/alternatives/camunda) | BPMN diagram | Camunda SaaS or self-managed | Job workers | Camunda platform components |
+
+Competitor details change quickly. Each page links to the vendor's own
+documentation — check it before you decide.
+
+## Two models, one decision
+
+<Mermaid
+  title="Where the workflow lives"
+  chart={`
+flowchart TB
+  subgraph ORC[Orchestration: node-flow, Conductor, Step Functions, Camunda]
+    O1[The workflow is a document the engine reads]
+    O2[Engine owns control flow; your code owns one step]
+    O3[Any language, no runtime in the worker]
+    O1 --> O2 --> O3
+  end
+  subgraph DUR[Durable execution: Temporal, Restate, Inngest, Trigger.dev, iii, Hatchet]
+    D1[The workflow is code in your service]
+    D2[SDK replays or checkpoints it]
+    D3[One SDK per language]
+    D1 --> D2 --> D3
+  end
+`}
+/>
+
+**Pick orchestration (node-flow)** when a process crosses teams, services or
+languages; when operators who do not read your code need to see, retry or
+terminate a run; when long waits and human approvals are normal; and when you
+want to run one database rather than a platform.
+
+**Pick durable execution** when the whole workflow lives inside one team's
+service, in one language, and is genuinely code — rich types, complex state,
+logic that would be miserable as JSON.
+
+They also combine: node-flow can own a cross-team process and call a Temporal
+workflow, a Trigger.dev task or a Lambda as one step.
+
+## By search
+
+- Looking for a **Netflix Conductor alternative** now that Netflix no longer maintains it? → [Conductor](/docs/alternatives/conductor)
+- Looking for an **Orkes Conductor alternative** you can self-host without a licence negotiation? → [Orkes](/docs/alternatives/orkes)
+- Looking for a **Temporal alternative** without determinism rules or a Cassandra cluster? → [Temporal](/docs/alternatives/temporal)
+- Looking for a **Trigger.dev alternative** that is not TypeScript-only? → [Trigger.dev](/docs/alternatives/trigger-dev)
+- Looking for an **open-source workflow orchestrator**? → [Open-source workflow engines](/docs/alternatives/open-source-workflow-engines)
+
+<FAQ
+  items={[
+    {
+      question: 'What is node-flow?',
+      answer:
+        'node-flow is a self-hosted workflow orchestration engine. Workflows are declarative JSON DAGs, workers in any language poll for tasks over HTTP, and PostgreSQL 18 is the only infrastructure it needs. It is compatible with the Netflix Conductor API for supported workflow and worker endpoints.',
+    },
+    {
+      question: 'What is the best alternative to Netflix Conductor?',
+      answer:
+        'If you want to keep Conductor’s model — JSON workflows and polling workers in any language — node-flow is the closest alternative: it exposes a Conductor-compatible API at /conductor/api and replaces Conductor’s Redis, persistence and Elasticsearch stack with a single Postgres database. If you want to move to code-first workflows instead, Temporal is the usual choice.',
+    },
+    {
+      question: 'Is node-flow a Temporal alternative?',
+      answer:
+        'Yes, for cross-team and cross-language processes. Temporal makes code durable; node-flow orchestrates a JSON workflow whose steps are run by workers in any language. node-flow has no determinism rules for workflow code and needs only Postgres; Temporal is the better fit when the workflow is complex code owned by one team.',
+    },
+    {
+      question: 'Is node-flow free?',
+      answer:
+        'Yes. node-flow is free to run, including commercially and in products you sell. It is source available rather than OSI open source: you may read, run and redistribute it unmodified, but not distribute modified versions.',
+    },
+  ]}
+/>

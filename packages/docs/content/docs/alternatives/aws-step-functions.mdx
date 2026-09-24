@@ -1,0 +1,61 @@
+---
+title: "AWS Step Functions alternative: node-flow vs Step Functions"
+description: node-flow vs AWS Step Functions — a portable, self-hosted JSON workflow engine with no per-transition pricing and no cloud lock-in.
+---
+
+**node-flow is a self-hosted AWS Step Functions alternative.** Both describe a
+workflow as JSON rather than code: Step Functions uses the Amazon States
+Language, node-flow uses a Conductor-style DAG. The difference is where it runs
+and what it costs. Step Functions is an AWS-managed service billed per state
+transition (Standard) or per request and duration (Express). node-flow runs
+wherever you run a container and a Postgres database, for free.
+
+## Why people look for a Step Functions alternative
+
+- **Portability.** Run the same workflows on AWS, GCP, Azure, on-premises or a
+  laptop — including in air-gapped environments.
+- **Predictable cost at volume.** No per-transition charge; you pay for the
+  compute and Postgres you already size.
+- **Workers anywhere.** node-flow workers are HTTP clients, not Lambda
+  functions or AWS activity workers.
+- **Local development and tests.** `nf test` and `@node-flow-dev/testkit` run a
+  whole workflow in milliseconds without any cloud account.
+
+## node-flow vs Step Functions at a glance
+
+| | node-flow | AWS Step Functions |
+|---|---|---|
+| Definition | JSON DAG | Amazon States Language (JSON) |
+| Hosting | Self-hosted anywhere | AWS only |
+| Pricing | Free to run | Per state transition or per request/duration |
+| Workers | Any process over HTTP | Lambda, AWS service integrations, activity workers |
+| Branching and parallelism | `SWITCH`, `FORK_JOIN`, `FORK_JOIN_DYNAMIC`, `DO_WHILE` | `Choice`, `Parallel`, `Map` |
+| Long waits | `WAIT`, `HUMAN`, `WAIT_FOR_WEBHOOK` — one row each | `Wait`, task tokens |
+| Human approvals | `HUMAN` task with inbox | Task tokens plus your own UI |
+| Visual editor | Yes | Workflow Studio |
+| Access control | Namespaces, RBAC, SSO | IAM |
+
+## When Step Functions is the better choice
+
+Choose Step Functions when you are all-in on AWS, your steps are mostly Lambda
+and AWS service calls, and you want zero infrastructure to operate.
+
+<FAQ
+  items={[
+    {
+      question: 'Is there a self-hosted alternative to AWS Step Functions?',
+      answer:
+        'node-flow is a self-hosted workflow engine where workflows are also JSON. It runs anywhere Docker and PostgreSQL run, has no per-transition pricing, and supports branching, parallelism, loops, waits, human approvals and saga compensation.',
+    },
+    {
+      question: 'Can node-flow call AWS services?',
+      answer:
+        'Yes. HTTP system tasks can call any API, workers can use any AWS SDK, and event handlers can consume from SQS. node-flow simply does not require AWS to run.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Workflows](/docs/guide/workflows)
+- [CLI](/docs/guide/cli)

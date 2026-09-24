@@ -1,0 +1,73 @@
+---
+title: "Trigger.dev alternative: node-flow vs Trigger.dev"
+description: node-flow vs Trigger.dev — language-agnostic workers and JSON workflows on your own Postgres, instead of TypeScript tasks deployed to a task runtime.
+---
+
+**node-flow is a Trigger.dev alternative for teams whose work is not all
+TypeScript, or not all in one codebase.** Trigger.dev is a platform for
+background jobs and AI agents written as TypeScript tasks, which it builds,
+deploys and runs for you. node-flow is an orchestrator: it runs a JSON workflow
+and hands each step to whichever worker owns it — in TypeScript, Python, Go,
+Java, Rust or a plain HTTP client — running wherever you already run code.
+
+## Why people look for a Trigger.dev alternative
+
+- **More than one language.** Trigger.dev tasks are TypeScript. node-flow's
+  worker protocol is HTTP, so a Python ML service and a Go payments service can
+  be steps in the same workflow.
+- **Your compute stays yours.** node-flow does not build or host your code.
+  Workers are processes you already deploy; node-flow only leases them work.
+- **A smaller self-hosted footprint.** Self-hosting Trigger.dev means its
+  webapp and supervisor plus Postgres, Redis, object storage and a container
+  registry. node-flow needs Postgres.
+- **Processes, not just jobs.** Fork/join, switch, loops, sub-workflows, saga
+  compensation, human approvals and waits of days are workflow primitives, and
+  the whole graph is visible to operators.
+
+## node-flow vs Trigger.dev at a glance
+
+| | node-flow | Trigger.dev |
+|---|---|---|
+| Unit of work | A step in a JSON DAG | A TypeScript task |
+| Languages | Any, over HTTP | TypeScript (can shell out to other runtimes) |
+| Where your code runs | Your own workers, anywhere | Trigger.dev's runtime (cloud or self-hosted) |
+| Deploy step | None for workers; register a definition | Build and deploy tasks with the CLI |
+| Self-hosted dependencies | PostgreSQL 18 | Postgres, Redis, object storage, registry and more |
+| Orchestration | Operators: `SWITCH`, `FORK_JOIN`, `DO_WHILE`, `SUB_WORKFLOW`, saga compensation | Code: `triggerAndWait`, batch triggers |
+| Human approvals | `HUMAN` task with inbox | Wait tokens, your own UI |
+| Schedules and webhooks | Leased cron with timezones; signed inbound webhooks | Scheduled tasks; triggers from your code |
+| Managed offering | Self-hosted | Trigger.dev Cloud |
+| Licence | Source available, free to run commercially | Apache 2.0 |
+
+## When Trigger.dev is the better choice
+
+Choose Trigger.dev when your team is TypeScript-first, wants background jobs
+colocated with an app, and would rather not operate the compute that runs them.
+Its developer experience for that case — local dev, deploys, realtime run
+updates in your frontend — is excellent.
+
+<FAQ
+  items={[
+    {
+      question: 'Is there a Trigger.dev alternative that supports Python and Go?',
+      answer:
+        'node-flow workers can be written in any language because the worker protocol is plain HTTP: lease a task, heartbeat, report a result. Generated clients exist for Python, Go, Java and TypeScript, and the TypeScript SDK includes a Worker class.',
+    },
+    {
+      question: 'Can I self-host node-flow with just Postgres?',
+      answer:
+        'Yes. node-flow is one container image plus PostgreSQL 18. The quickstart brings up Postgres, the engine and the dashboard with a single Docker Compose command.',
+    },
+    {
+      question: 'Does node-flow run my code for me like Trigger.dev?',
+      answer:
+        'No. node-flow orchestrates; your workers run where you already run services. Built-in system tasks — HTTP, SQL, gRPC, jq, sandboxed JavaScript, LLM calls, email, webhooks — run inside node-flow without any worker at all.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Quickstart](/docs/guide/quickstart)
+- [System tasks](/docs/guide/system-tasks) — what runs without a worker.
+- [Inngest alternative](/docs/alternatives/inngest)

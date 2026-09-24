@@ -1,0 +1,77 @@
+---
+title: "Orkes Conductor alternative: node-flow vs Orkes"
+description: node-flow vs Orkes Conductor — a self-hosted, Conductor-compatible workflow engine with RBAC, SSO and AI tasks, free to run commercially on Postgres alone.
+---
+
+**node-flow is a self-hosted alternative to Orkes Conductor.** Orkes is the
+company founded by Conductor's original creators; it sells Conductor as a
+managed cloud and as an enterprise install. node-flow offers the same workflow
+model and a Conductor-compatible API as software you run yourself, on one
+Postgres database, with no licence fee.
+
+## Why people look for an Orkes alternative
+
+- **Self-hosting without a sales process.** Running node-flow in production —
+  for a business, inside a product you sell, for your customers — needs no
+  commercial licence, seat count or revenue threshold.
+- **Data residency.** Every workflow input, output and secret stays in your own
+  Postgres, in your own network.
+- **Enterprise features, included.** Namespaces, RBAC with groups and tags,
+  OIDC and SAML SSO, service accounts, mTLS, sealed secrets, audit log and
+  quotas are part of node-flow, not a paid tier.
+- **One dependency.** Orkes' self-hosted distribution runs on a larger backend
+  stack; node-flow needs PostgreSQL 18.
+
+## node-flow vs Orkes at a glance
+
+| | node-flow | Orkes Conductor |
+|---|---|---|
+| Workflow model | JSON DAG, Conductor-style | JSON DAG, Conductor |
+| Hosting | Self-hosted — Docker, Kubernetes, any managed Postgres | Orkes Cloud, or enterprise self-hosted |
+| Price | Free to run, including commercially | Commercial |
+| Infrastructure | PostgreSQL 18 only | Managed, or a multi-store backend when self-hosted |
+| Conductor SDKs | Supported through `/conductor/api` | Native |
+| RBAC, SSO, audit | Included | Included in commercial plans |
+| AI / LLM tasks | LLM text and chat, embeddings, vector indexes in Postgres, MCP, `AGENT`, guardrails | Included in Orkes' product |
+| Human tasks | `HUMAN` tasks with an inbox in the dashboard | Included |
+| Support | Community, or terms by agreement | Commercial support |
+
+## When Orkes is the better choice
+
+- You want someone else to operate the orchestrator, with an SLA.
+- You rely on Orkes-specific features, integrations or SDK behaviour beyond the
+  Conductor API node-flow implements.
+- Your procurement process needs an established vendor and a standard licence.
+
+## Moving from Orkes
+
+The path is the same as from Conductor OSS: change the SDK base URL to
+node-flow's `/conductor` prefix, create node-flow service accounts, register
+your definitions and move workers one queue at a time. Orkes credentials are
+not imported — see [Conductor compatibility](/docs/guide/conductor#credentials-and-permissions).
+
+<FAQ
+  items={[
+    {
+      question: 'Is there a free, self-hosted alternative to Orkes Conductor?',
+      answer:
+        'node-flow is one: it implements Conductor’s JSON workflow model and a Conductor-compatible API, runs on PostgreSQL alone, and is free to run in production, including commercially. Conductor OSS is another option if you want the original Java server under Apache 2.0.',
+    },
+    {
+      question: 'Do Orkes JavaScript, Python or Java SDKs work with node-flow?',
+      answer:
+        'The supported workflow and worker endpoints work through node-flow’s /conductor/api layer. The JavaScript SDK 4.0.0 is exercised in node-flow’s regression suite. Other SDK versions and optional features should be verified before a production switch.',
+    },
+    {
+      question: 'Does node-flow include RBAC and SSO?',
+      answer:
+        'Yes. Namespaces, role-based access control with groups and tag-based grants, API keys, service accounts, mTLS, OIDC workload identity, OIDC and SAML single sign-on, sealed secrets and an audit log are all part of node-flow.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Quickstart](/docs/guide/quickstart)
+- [Security](/docs/guide/security)
+- [Netflix Conductor alternative](/docs/alternatives/conductor)

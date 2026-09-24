@@ -1,0 +1,23 @@
+{
+  "title": "Compare",
+  "description": "node-flow against other workflow engines",
+  "root": true,
+  "pages": [
+    "index",
+    "open-source-workflow-engines",
+    "---Conductor family---",
+    "conductor",
+    "orkes",
+    "---Durable execution---",
+    "temporal",
+    "trigger-dev",
+    "inngest",
+    "restate",
+    "iii",
+    "hatchet",
+    "---Other orchestrators---",
+    "aws-step-functions",
+    "airflow",
+    "camunda"
+  ]
+}

@@ -13,7 +13,13 @@ export function baseOptions(): BaseLayoutProps {
     nav: {
       title: (
         <span className="flex items-center gap-2">
-          <Image src="/brand/node-flow.png" alt="Node Flow" width={2172} height={724} className="h-7 w-auto" />
+          <Image
+            src="/brand/node-flow.png"
+            alt="Node Flow"
+            width={2172}
+            height={724}
+            className="h-7 w-auto"
+          />
           <span className="text-fd-muted-foreground">docs</span>
         </span>
       ),
@@ -21,6 +27,7 @@ export function baseOptions(): BaseLayoutProps {
     },
     links: [
       { text: 'Guide', url: '/docs/guide', active: 'nested-url' },
+      { text: 'Compare', url: '/docs/alternatives', active: 'nested-url' },
       { text: 'Contributing', url: '/docs/contributing', active: 'nested-url' },
       { text: 'API', url: '/api-reference', active: 'nested-url' },
     ],

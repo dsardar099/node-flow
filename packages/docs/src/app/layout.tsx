@@ -70,6 +70,13 @@ export const metadata: Metadata = {
       'max-video-preview': -1,
     },
   },
+  verification: {
+    google: site.verification.google,
+    yandex: site.verification.yandex,
+    other: site.verification.bing
+      ? { 'msvalidate.01': site.verification.bing }
+      : undefined,
+  },
   formatDetection: { telephone: false, email: false, address: false },
 };
 

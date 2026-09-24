@@ -1,0 +1,48 @@
+---
+title: "Apache Airflow alternative: node-flow vs Airflow"
+description: node-flow vs Apache Airflow — event-driven, long-running business workflows with polyglot workers, compared with Airflow's scheduled Python data pipelines.
+---
+
+**node-flow is an Airflow alternative for business and service workflows —
+not a replacement for data pipelines.** Apache Airflow schedules batch DAGs
+written in Python: run this pipeline every night, backfill last month. node-flow
+runs *per-event* workflows: an order was placed, a document arrived, a user
+signed up — thousands of concurrent runs, each with its own inputs, retries,
+waits and human steps.
+
+## node-flow vs Airflow at a glance
+
+| | node-flow | Apache Airflow |
+|---|---|---|
+| Typical workload | Per-event business processes, microservice orchestration, AI agents | Scheduled batch and data pipelines |
+| Workflow is… | A JSON DAG | A Python DAG |
+| Triggered by | API calls, cron, webhooks, message-broker events | Schedules, datasets/assets, API |
+| Run inputs | Every run has its own typed input | DAG run configuration |
+| Latency to start a step | Workers long-poll; steps start as soon as they are ready | Scheduler loop and executor |
+| Languages | Any, over HTTP | Python operators (others via containers) |
+| Long waits and human approvals | First-class | Sensors and deferrable operators |
+| Infrastructure | PostgreSQL 18 | Scheduler, metadata database, executor, webserver |
+
+## Choose which
+
+**Choose Airflow** for ETL and ELT, backfills, and data-team-owned scheduled
+pipelines — its operator ecosystem is unmatched there.
+
+**Choose node-flow** when each run is a transaction in your product: a payment,
+an onboarding, a claim, a document pipeline triggered per upload, an LLM agent
+loop.
+
+<FAQ
+  items={[
+    {
+      question: 'Is node-flow a replacement for Airflow?',
+      answer:
+        'For event-driven business workflows and microservice orchestration, yes. For scheduled batch data pipelines and backfills, Airflow remains the better tool; the two are often used together.',
+    },
+  ]}
+/>
+
+## Next
+
+- [Concepts](/docs/guide/concepts)
+- [System tasks](/docs/guide/system-tasks)
